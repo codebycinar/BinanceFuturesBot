@@ -88,7 +88,10 @@ class SupportResistanceStrategy {
     let touchCount = 0;
     const threshold = prices[pivotIndex] * this.pivotThreshold;
     
-    // Look forward from pivot point
+    // Hacmi kontrol et
+    const volumes = this.candlesticks.map(candle => parseFloat(candle.volume));
+    const pivotVolume = volumes[pivotIndex];
+  
     for (let i = pivotIndex + 1; i < prices.length; i++) {
       if (type === 'support' && Math.abs(prices[i] - prices[pivotIndex]) <= threshold) {
         touchCount++;
@@ -96,8 +99,8 @@ class SupportResistanceStrategy {
         touchCount++;
       }
     }
-
-    return touchCount;
+  
+    return touchCount + (pivotVolume > Math.max(...volumes) * 0.8 ? 2 : 0); // Hacim yüksekse kuvvet artır
   }
 
   filterStrongPivots(pivots) {
@@ -173,12 +176,15 @@ class SupportResistanceStrategy {
   }
 
   findNearestLevel(price, levels) {
+    if (!levels || levels.length === 0) {
+      logger.warn('No levels provided for nearest level calculation.');
+      return null; // Eğer seviyeler boşsa null döndür
+    }
     return levels.reduce((nearest, level) => {
-      const currentDiff = Math.abs(level.price - price);
-      const nearestDiff = Math.abs(nearest.price - price);
-      return currentDiff < nearestDiff ? level : nearest;
+      const diff = Math.abs(level.price - price);
+      return diff < Math.abs(nearest.price - price) ? level : nearest;
     }, levels[0]);
-  }
+  }  
 }
 
 module.exports = SupportResistanceStrategy;
