@@ -1,0 +1,19 @@
+{
+  "name": "binance-futures-bot",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "jest"
+  },
+  "dependencies": {
+    "@binance/futures-connector": "^0.1.6",
+    "binance-api-node": "^0.12.9",
+    "dotenv": "^16.3.1",
+    "technicalindicators": "^3.1.0",
+    "winston": "^3.11.0"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
+  }
+}
