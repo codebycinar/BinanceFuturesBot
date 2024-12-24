@@ -7,11 +7,12 @@ class TradingBot {
   constructor() {
     this.binanceService = new BinanceService();
     this.marketScanner = new MarketScanner();
+   
   }
 
   async start() {
     logger.info('Starting trading bot...');
-
+    await this.binanceService.initialize();
     try {
       await Promise.all([
         this.startMarketScanning(),
@@ -28,7 +29,8 @@ class TradingBot {
       try {
         logger.info('Scanning all markets for opportunities...');
         const allSymbols = await this.binanceService.getAllSymbols();
-        const opportunities = await this.marketScanner.scanMarkets(allSymbols);
+        const filteredSymbols = allSymbols.filter(symbol => symbol.endsWith('USDT'));
+        const opportunities = await this.marketScanner.scanMarkets(filteredSymbols);
 
         if (opportunities.length > 0) {
           logger.info(`Found ${opportunities.length} opportunities.`);
@@ -60,9 +62,9 @@ class TradingBot {
     try {
       const positionSize = this.calculatePositionSize(price);
       if (signal === 'LONG') {
-        await this.binanceService.openPosition(symbol, 'BUY', positionSize, 'LONG');
+        await this.binanceService.openPosition(symbol, 'BUY', positionSize,'MARKET', 'LONG');
       } else if (signal === 'SHORT') {
-        await this.binanceService.openPosition(symbol, 'SELL', positionSize, 'SHORT');
+        await this.binanceService.openPosition(symbol, 'SELL', positionSize, 'MARKET', 'SHORT');
       }
       logger.info(`Opened ${signal} position for ${symbol} at ${price}`);
     } catch (error) {
