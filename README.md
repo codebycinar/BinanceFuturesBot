@@ -17,7 +17,7 @@ Bu bot, Binance Futures piyasasında otomatik alım-satım yapan bir trading bot
    ```bash
    npm install
    ```
-3. `.env` dosyasını düzenleyin ve Binance API bilgilerinizi ekleyin
+3. `.env` dosyasını düzenleyin ve Binance API bilgilerinizi ekleyin. BINANCE_API_KEY=blablabla ve BINANCE_API_SECRET=blablabla olarak
 4. Botu başlatın:
    ```bash
    npm start
