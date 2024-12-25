@@ -1,13 +1,16 @@
+// index.js
 const BinanceService = require('./services/BinanceService');
 const MarketScanner = require('./services/MarketScanner');
+const OrderService = require('./services/OrderService');
 const logger = require('./utils/logger');
 const config = require('./config/config');
 
 class TradingBot {
   constructor() {
+    // Tek bir BinanceService instance'ı oluşturuyoruz
     this.binanceService = new BinanceService();
-    this.marketScanner = new MarketScanner();
-   
+    this.orderService = new OrderService(this.binanceService);
+    this.marketScanner = new MarketScanner(this.binanceService, this.orderService);
   }
 
   async start() {
@@ -27,20 +30,15 @@ class TradingBot {
   async startMarketScanning() {
     while (true) {
       try {
-        logger.info('Scanning all markets for opportunities...');
-        const allSymbols = await this.binanceService.getAllSymbols();
-        const filteredSymbols = allSymbols.filter(symbol => symbol.endsWith('USDT'));
-        const opportunities = await this.marketScanner.scanMarkets(filteredSymbols);
+        logger.info('Scanning config-defined symbols for opportunities...', { timestamp: new Date().toISOString() });
+        await this.marketScanner.scanConfigSymbols(); 
 
-        if (opportunities.length > 0) {
-          logger.info(`Found ${opportunities.length} opportunities.`);
-          await Promise.all(opportunities.map(this.evaluateOpportunity.bind(this)));
-        }
-
-        await new Promise(resolve => setTimeout(resolve, config.marketScanInterval || 300000)); // 5 dakika
+        // 5 dk bekleme
+        await new Promise(resolve => setTimeout(resolve, config.marketScanInterval || 300000));
       } catch (error) {
         logger.error('Error in market scanning loop:', error);
-        await new Promise(resolve => setTimeout(resolve, 60000)); // 1 dakika
+        // Hata durumunda 1 dk bekleyip tekrar dene
+        await new Promise(resolve => setTimeout(resolve, 60000));
       }
     }
   }
@@ -54,28 +52,6 @@ class TradingBot {
         logger.error('Error during order cleanup:', error);
       }
     }, config.orderCleanupInterval || 60000); // Varsayılan 1 dakika
-  }
-
-  async evaluateOpportunity(opportunity) {
-    const { symbol, signal, price, levels } = opportunity;
-
-    try {
-      const positionSize = this.calculatePositionSize(price);
-      if (signal === 'LONG') {
-        await this.binanceService.openPosition(symbol, 'BUY', positionSize,'MARKET', 'LONG');
-      } else if (signal === 'SHORT') {
-        await this.binanceService.openPosition(symbol, 'SELL', positionSize, 'MARKET', 'SHORT');
-      }
-      logger.info(`Opened ${signal} position for ${symbol} at ${price}`);
-    } catch (error) {
-      logger.error(`Error evaluating opportunity for ${symbol}:`, error);
-    }
-  }
-
-  calculatePositionSize(price) {
-    const balance = config.initialBalance || 1000; // Test için varsayılan bir bakiye
-    const riskPerTrade = config.riskPerTrade || 0.01; // %1 risk
-    return (balance * riskPerTrade) / price;
   }
 }
 
