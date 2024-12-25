@@ -40,15 +40,15 @@ class OrderService {
         return null;
       }
 
-      // Stop-loss & take-profit seviyeleri
-      const { stopLoss, takeProfit } = this.calculateOrderLevels(signal, currentPrice, levels);
-
+      const stopLossPrice = calculateStopLoss(signal === 'LONG' ? 'LONG' : 'SHORT', currentPrice, levels.support);
+      const takeProfitPrice = calculateTakeProfit(signal === 'LONG' ? 'LONG' : 'SHORT', currentPrice, levels.resistance);
+    
       // Stop-loss
       await this.binanceService.placeStopLossOrder(
         symbol,
         signal === 'LONG' ? 'SELL' : 'BUY',
         positionSize,
-        stopLoss,
+        stopLossPrice,
         positionSide
       );
 
@@ -57,7 +57,7 @@ class OrderService {
         symbol,
         signal === 'LONG' ? 'SELL' : 'BUY',
         positionSize,
-        takeProfit,
+        takeProfitPrice,
         positionSide
       );
 
