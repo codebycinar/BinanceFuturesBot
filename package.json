@@ -10,6 +10,7 @@
     "@binance/futures-connector": "^0.1.6",
     "binance-api-node": "^0.12.9",
     "dotenv": "^16.3.1",
+    "node-notifier": "^10.0.1",
     "technicalindicators": "^3.1.0",
     "winston": "^3.11.0"
   },

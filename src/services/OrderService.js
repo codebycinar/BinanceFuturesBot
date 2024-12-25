@@ -1,5 +1,8 @@
-// OrderService.js
+// services/OrderService.js
+
 const logger = require('../utils/logger');
+const notifier = require('node-notifier'); // node-notifier'ı içe aktarın
+const path = require('path'); // İsteğe bağlı: Bildirim simgesi eklemek için
 const config = require('../config/config');
 
 class OrderService {
@@ -8,104 +11,82 @@ class OrderService {
   }
 
   /**
-   * Tek fonksiyon: Market emriyle aç, sabit SL, 3 kademeli TP + opsiyonel trailingStop.
+   * Pozisyon açma işlemi
    */
-  async openPositionWithMultipleTPAndTrailing(
-    symbol,
-    signal,        // 'LONG'|'SHORT'
-    entryPrice,
-    levels,        
-    useTrailingStop = config.trailingStop.use,  // config'den al
-    trailingRate = config.trailingStop.callbackRate // config'den al
-  ) {
+  async openPositionWithMultipleTPAndTrailing(symbol, side, currentPrice, levels = {}, useTrailingStop, callbackRate) {
     try {
-      // 1) Bakiye ve pozisyon büyüklüğü
-      const balance = await this.binanceService.getFuturesBalance();
-      const positionSize = await this.calculatePositionSize(symbol, balance, entryPrice); // Sembol parametresi eklendi
+      // Pozisyon açma
+      const positionSide = side === 'BUY' ? 'LONG' : 'SHORT';
+      const quantity = await this.calculatePositionSize(symbol, currentPrice);
+      await this.binanceService.placeMarketOrder(symbol, side, quantity, positionSide);
+      logger.info(`Market order placed: ${side} ${symbol} x${quantity}`);
 
-      // 2) Market emriyle pozisyonu aç
-      const side = signal === 'LONG' ? 'BUY' : 'SELL';
-      const positionSide = signal === 'LONG' ? 'LONG' : 'SHORT';
-
-      const entryOrder = await this.binanceService.placeMarketOrder(
-        symbol,
-        side,
-        positionSize,
-        positionSide
-      );
-      if (!entryOrder) {
-        logger.error(`Failed to open position for ${symbol}`);
-        return null;
+      // ATR hesaplama
+      const atr = await this.binanceService.calculateATR(symbol, config.strategy.atrPeriod);
+      if (atr === undefined) {
+        logger.warn(`ATR is undefined for ${symbol}. Skipping stop-loss and take-profit placement.`);
+        return false;
       }
 
-      // 3) Stop-loss (config'den)
-      const stopLossPrice = await this.calculateStopLossPrice(symbol, signal, entryPrice, levels); // Sembol parametresi eklendi
-      await this.binanceService.placeStopLossOrder(
-        symbol,
-        side === 'BUY' ? 'SELL' : 'BUY',
-        positionSize,
-        stopLossPrice,
-        positionSide
-      );
+      // Risk Reward Ratio kullanımı
+      const riskAmount = atr * config.strategy.keyValue; // 'a' * ATR
+      const stopLoss = side === 'BUY' ? currentPrice - riskAmount : currentPrice + riskAmount;
+      const takeProfit = side === 'BUY'
+        ? currentPrice + (riskAmount * config.strategy.riskRewardRatio)
+        : currentPrice - (riskAmount * config.strategy.riskRewardRatio);
 
-      // 4) Kademeli Take-Profit (config'den)
-      for (let i = 0; i < config.takeProfitPercents.length; i++) {
-        const tpPercent = config.takeProfitPercents[i];
-        const tpPrice = signal === 'LONG' ? entryPrice * (1 + tpPercent / 100) : entryPrice * (1 - tpPercent / 100);
-        const tpQty = positionSize * ((i < config.takeProfitPercents.length - 1) ? 0.3 : 0.4); // Son TP için farklı oran
+      // Stop-Loss Emirini Yerleştirme
+      await this.binanceService.placeStopLossOrder(symbol, side === 'BUY' ? 'SELL' : 'BUY', quantity, stopLoss, positionSide);
+      logger.info(`Stop-Loss order placed at ${stopLoss}`);
 
-        await this.binanceService.placeTakeProfitOrder(
-          symbol,
-          side === 'BUY' ? 'SELL' : 'BUY',
-          tpQty,
-          tpPrice,
-          positionSide
-        );
-      }
+      // Take-Profit Emirini Yerleştirme
+      await this.binanceService.placeTakeProfitOrder(symbol, side === 'BUY' ? 'SELL' : 'BUY', quantity, takeProfit, positionSide);
+      logger.info(`Take-Profit order placed at ${takeProfit}`);
 
-      // 5) Trailing Stop (opsiyonel, config'den)
+      // Trailing Stop ekleme
       if (useTrailingStop) {
-        const trailingSide = side === 'BUY' ? 'SELL' : 'BUY';
-        await this.binanceService.placeTrailingStopOrder(
-          symbol,
-          trailingSide,
-          positionSize,
-          trailingRate,
-          positionSide
-        );
-        logger.info(`Trailing Stop enabled at callbackRate: ${trailingRate}% for ${symbol}`);
+        await this.binanceService.placeTrailingStopOrder(symbol, side === 'BUY' ? 'SELL' : 'BUY', quantity, callbackRate, positionSide);
+        logger.info(`Trailing Stop order placed with callback rate ${callbackRate}%`);
       }
 
-      logger.info(`Opened position for ${symbol} with multiple TP & trailingStop=${useTrailingStop}`);
-      return entryOrder;
+      // Bildirim Gönderme
+      notifier.notify(
+        {
+          title: 'Pozisyon Açıldı!',
+          message: `${side} pozisyonu açıldı: ${symbol} x${quantity}`,
+          sound: true, // Ses çalmasını sağlar
+          icon: path.join(__dirname, 'trade-icon.png'), // İsteğe bağlı: Bildirim simgesi
+          wait: false
+        },
+        function (err, response, metadata) {
+          if (err) {
+            logger.error('Notification error:', err);
+          }
+        }
+      );
+
+      return true;
     } catch (error) {
-      logger.error(`Error opening multi-TP & trailing position for ${symbol}:`, error);
-      return null;
+      logger.error(`Error opening position for ${symbol}:`, error);
+      return false;
     }
   }
 
   /**
-   * Stop-loss fiyatını hesaplar.
+   * Pozisyon boyutunu hesaplama
    */
-  async calculateStopLossPrice(symbol, signal, entryPrice, levels) {
-    const slPercent = config.stopLossPercent; // Config'den al
-    const pricePrecision = await this.binanceService.getPricePrecision(symbol); // Fiyat precision'ını al
-
-    if (signal === 'LONG') {
-      return parseFloat((entryPrice * (1 - slPercent / 100)).toFixed(pricePrecision));
-    } else {
-      return parseFloat((entryPrice * (1 + slPercent / 100)).toFixed(pricePrecision));
+  async calculatePositionSize(symbol, currentPrice) {
+    try {
+      const balance = await this.binanceService.getFuturesBalance();
+      const riskAmount = balance.availableBalance * config.riskPerTrade;
+      const stopLossDistance = config.strategy.keyValue; // ATR'nin kaç katı risk alınacak
+      const quantity = riskAmount / (currentPrice * stopLossDistance);
+      const quantityPrecision = await this.binanceService.getQuantityPrecision(symbol);
+      return parseFloat(quantity.toFixed(quantityPrecision));
+    } catch (error) {
+      logger.error(`Error calculating position size for ${symbol}:`, error);
+      return 0;
     }
-  }
-
-  /**
-   * Pozisyon boyutu hesaplar (ör. cüzdanın %1'i kadar risk).
-   */
-  async calculatePositionSize(symbol, balance, price) {
-    const riskAmount = balance.availableBalance * config.riskPerTrade;
-    const quantity = riskAmount / price;
-    const quantityPrecision = await this.binanceService.getQuantityPrecision(symbol); // Sembol precision'ını al
-    return parseFloat(quantity.toFixed(quantityPrecision));
   }
 }
 

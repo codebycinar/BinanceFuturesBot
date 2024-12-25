@@ -1,157 +1,277 @@
 // strategies/MultiTimeframeScalpingStrategy.js
 
-const talib = require('talib'); 
-// talib kullanmak isterseniz "npm install talib" veya benzer library gerekir.
-// Aksi halde kendiniz RSI, MA hesaplayabilirsiniz.
-
 class MultiTimeframeScalpingStrategy {
-  /**
-   * Constructor, gereken parametreleri vs. alabilirsiniz.
-   * örneğin:
-   * @param {Number} rsiPeriod - RSI periyodu (ör. 14)
-   * @param {Number} shortMAPeriod - Kısa MA periyodu (ör. 9)
-   * @param {Number} longMAPeriod - Uzun MA periyodu (ör. 21)
-   */
-  constructor(config = {}) {
-    this.rsiPeriod = config.rsiPeriod || 14;
-    this.shortMAPeriod = config.shortMAPeriod || 9;
-    this.longMAPeriod = config.longMAPeriod || 21;
-  }
+    constructor(config = {}) {
+        // Göstergeler için ayarlar
+        this.rsiPeriod = config.rsiPeriod || 14;
+        this.shortMAPeriod = config.shortMAPeriod || 9;
+        this.longMAPeriod = config.longMAPeriod || 21;
+        this.bollingerPeriod = config.bollingerPeriod || 20;
+        this.bollingerStdDev = config.bollingerStdDev || 2;
+        this.macdShort = config.macdShort || 12;
+        this.macdLong = config.macdLong || 26;
+        this.macdSignal = config.macdSignal || 9;
+        this.stochasticPeriod = config.stochasticPeriod || 14;
+        this.stochasticSmoothK = config.stochasticSmoothK || 3;
+        this.stochasticSmoothD = config.stochasticSmoothD || 3;
 
-  /**
-   * 15m mumlarına bakarak temel trend yönünü bulur
-   */
-  async determineTrend(candles15m) {
-    // basitçe uzun MA ve kısa MA kıyaslayabiliriz
-    const closes = candles15m.map(c => parseFloat(c.close));
-    if (closes.length < this.longMAPeriod) {
-      return 'NEUTRAL';
+        // Linear Regression Channel Ayarları
+        this.lrPeriod = config.lrPeriod || 100; // Regresyon periyodu
+        this.lrScalingType = config.lrScalingType || 'Standard Deviation'; // 'Standard Deviation' veya 'ATR'
+        this.lrScalingCoefficient1 = config.lrScalingCoefficient1 || 1; // Scaling Coefficient Level 1
+        this.lrScalingCoefficient2 = config.lrScalingCoefficient2 || 2; // Scaling Coefficient Level 2
     }
 
-    // Uzun MA - Kısa MA hesapla (basit yöntem)
-    const shortMA = this.simpleMovingAverage(closes.slice(-this.shortMAPeriod));
-    const longMA = this.simpleMovingAverage(closes.slice(-this.longMAPeriod));
-
-    if (shortMA > longMA) {
-      return 'UPTREND';   // 15m uptrend
-    } else if (shortMA < longMA) {
-      return 'DOWNTREND'; // 15m downtrend
-    }
-    return 'NEUTRAL';
-  }
-
-  /**
-   * 5m mumlarına bakarak momentum teyidi ver
-   */
-  async determineMomentum(candles5m) {
-    // Örneğin RSI hesaplayıp 50'nin üstündeyse UP, altındaysa DOWN diyebiliriz
-    // Basitçe RSI => istek: talib / teknik-hesaplama kütüphanesi
-    const closes = candles5m.map(c => parseFloat(c.close));
-    if (closes.length < this.rsiPeriod) {
-      return 'NEUTRAL';
-    }
-
-    const lastRSIValue = await this.calculateRSI(closes, this.rsiPeriod);
-    if (lastRSIValue > 55) {
-      return 'UP';
-    } else if (lastRSIValue < 45) {
-      return 'DOWN';
-    }
-    return 'NEUTRAL';
-  }
-
-  /**
-   * 1m mumlarına bakarak "scalp sinyali" üret
-   * (örneğin RSI aşırı alım/satım veya MA crossover)
-   */
-  async getScalpSignal(candles1m, higherTimeframeTrend, middleTimeframeMomentum) {
-    // eğer 15m uptrend ve 5m momentum up ise => sadece LONG sinyali arayalım
-    // eğer 15m downtrend ve 5m momentum down ise => sadece SHORT sinyali arayalım
-    // aksi halde => sinyal arama
-    if (higherTimeframeTrend === 'UPTREND' && middleTimeframeMomentum === 'UP') {
-      // 1m RSI < 30 => scalp LONG sinyali ver
-      const closes = candles1m.map(c => parseFloat(c.close));
-      const lastRSIValue = await this.calculateRSI(closes, this.rsiPeriod);
-      if (lastRSIValue < 30) {
-        return 'LONG';
+    /**
+     * 1m mumlarına bakarak trend ve sinyal üret
+     */
+    async findScalpingSignal(candles1m) {
+        const closes = candles1m.map(c => parseFloat(c.close));
+        const highs = candles1m.map(c => parseFloat(c.high));
+        const lows = candles1m.map(c => parseFloat(c.low));
+      
+        const requiredLength = Math.max(
+          this.longMAPeriod,
+          this.bollingerPeriod,
+          this.macdLong,
+          this.stochasticPeriod,
+          this.lrPeriod
+        );
+      
+        if (closes.length < requiredLength) {
+          console.log('NEUTRAL: Yetersiz veri');
+          return 'NEUTRAL';
+        }
+      
+        // EMA hesaplama
+        const emaShort = this.calculateEMA(closes, this.shortMAPeriod);
+        const emaLong = this.calculateEMA(closes, this.longMAPeriod);
+        console.log(`EMA Short (${this.shortMAPeriod}): ${emaShort}`);
+        console.log(`EMA Long (${this.longMAPeriod}): ${emaLong}`);
+      
+        // EMA Crossover Kontrolü
+        const emaCrossover = emaShort > emaLong ? 'LONG' : emaShort < emaLong ? 'SHORT' : 'NEUTRAL';
+      
+        // Bollinger Bands hesaplama
+        const { upperBand, lowerBand } = this.calculateBollingerBands(closes.slice(-this.bollingerPeriod));
+        console.log(`Bollinger Upper Band: ${upperBand}`);
+        console.log(`Bollinger Lower Band: ${lowerBand}`);
+      
+        // RSI hesaplama
+        const rsi = this.calculateRSI(closes, this.rsiPeriod);
+        console.log(`RSI (${this.rsiPeriod}): ${rsi}`);
+      
+        // MACD hesaplama
+        const { macd, signal, histogram } = this.calculateMACD(closes, this.macdShort, this.macdLong, this.macdSignal);
+        console.log(`MACD: ${macd}`);
+        console.log(`MACD Signal: ${signal}`);
+        console.log(`MACD Histogram: ${histogram}`);
+      
+        // Stochastic Oscillator hesaplama
+        const { stochK, stochD } = this.calculateStochastic(highs, lows, closes, this.stochasticPeriod, this.stochasticSmoothK, this.stochasticSmoothD);
+        console.log(`Stochastic %K: ${stochK}`);
+        console.log(`Stochastic %D: ${stochD}`);
+      
+        // Linear Regression Channel Hesaplama
+        const { lrMiddle, lrUpper1, lrLower1, lrUpper2, lrLower2 } = this.calculateLinearRegressionChannel(closes, this.lrPeriod, this.lrScalingType, this.lrScalingCoefficient1, this.lrScalingCoefficient2);
+        console.log(`Linear Regression Middle: ${lrMiddle}`);
+        console.log(`Linear Regression Upper 1: ${lrUpper1}`);
+        console.log(`Linear Regression Lower 1: ${lrLower1}`);
+        console.log(`Linear Regression Upper 2: ${lrUpper2}`);
+        console.log(`Linear Regression Lower 2: ${lrLower2}`);
+      
+        const lastPrice = closes[closes.length - 1];
+        console.log(`Last Price: ${lastPrice}`);
+      
+        // Koşulların değerlendirilmesi
+        // LONG sinyali
+        const isLongCondition =
+          emaCrossover === 'LONG' &&
+          lastPrice <= lowerBand + (upperBand - lowerBand) * 0.1 && // %10 band genişliği
+          rsi < 50 && // RSI < 50
+          macd > signal &&
+          stochK < 30 && // %K < 30
+          stochD < 30 && // %D < 30
+          lastPrice < lrMiddle + (upperBand - lowerBand) * 0.05; // Fiyat, LR orta hattının biraz altında
+      
+        // SHORT sinyali
+        const isShortCondition =
+          emaCrossover === 'SHORT' &&
+          lastPrice >= upperBand - (upperBand - lowerBand) * 0.1 && // %10 band genişliği
+          rsi > 50 && // RSI > 50
+          macd < signal &&
+          stochK > 70 && // %K > 70
+          stochD > 70 && // %D > 70
+          lastPrice > lrMiddle - (upperBand - lowerBand) * 0.05; // Fiyat, LR orta hattının biraz üstünde
+      
+        if (isLongCondition) {
+          console.log('Signal: LONG');
+          return 'LONG';
+        }
+      
+        if (isShortCondition) {
+          console.log('Signal: SHORT');
+          return 'SHORT';
+        }
+      
+        console.log('Signal: NEUTRAL');
+        return 'NEUTRAL';
       }
-    } else if (higherTimeframeTrend === 'DOWNTREND' && middleTimeframeMomentum === 'DOWN') {
-      // 1m RSI > 70 => scalp SHORT sinyali ver
-      const closes = candles1m.map(c => parseFloat(c.close));
-      const lastRSIValue = await this.calculateRSI(closes, this.rsiPeriod);
-      if (lastRSIValue > 70) {
-        return 'SHORT';
-      }
+
+    /**
+     * Basit EMA hesaplama
+     */
+    calculateEMA(closes, period) {
+        const k = 2 / (period + 1);
+        let ema = closes.slice(0, period).reduce((acc, val) => acc + val, 0) / period;
+        for (let i = period; i < closes.length; i++) {
+            ema = closes[i] * k + ema * (1 - k);
+        }
+        return ema;
     }
-    return 'NEUTRAL';
-  }
 
-  /**
-   * Ana metod: 1m, 5m, 15m mumlarını alır, sinyali döndürür.
-   * Örnek:
-   * @param {Array} candles1m - 1m mumları
-   * @param {Array} candles5m - 5m mumları
-   * @param {Array} candles15m - 15m mumları
-   * @returns {String} 'LONG' | 'SHORT' | 'NEUTRAL'
-   */
-  async findScalpingSignal(candles1m, candles5m, candles15m) {
-    const trend15m = await this.determineTrend(candles15m);  // UPTREND | DOWNTREND | NEUTRAL
-    const momentum5m = await this.determineMomentum(candles5m); // UP | DOWN | NEUTRAL
-    const scalpSignal = await this.getScalpSignal(
-      candles1m,
-      trend15m,
-      momentum5m
-    );
+    /**
+     * Bollinger Bands hesaplama
+     */
+    calculateBollingerBands(closes) {
+        const sum = closes.reduce((acc, val) => acc + val, 0);
+        const mean = sum / closes.length;
+        const variance = closes.reduce((acc, val) => acc + Math.pow(val - mean, 2), 0) / closes.length;
+        const stdDev = Math.sqrt(variance);
 
-    return scalpSignal; // 'LONG', 'SHORT' veya 'NEUTRAL'
-  }
+        const upperBand = mean + this.bollingerStdDev * stdDev;
+        const lowerBand = mean - this.bollingerStdDev * stdDev;
 
-  /**
-   * Basit MA (örnek)
-   */
-  simpleMovingAverage(values) {
-    if (!values || values.length === 0) return 0;
-    const sum = values.reduce((acc, val) => acc + val, 0);
-    return sum / values.length;
-  }
-
-  /**
-   * RSI hesaplayan basit bir örnek. 
-   * (Kütüphaneye gerek olmaksızın koda gömülü hesaplama da yapabilirsiniz.)
-   */
-  async calculateRSI(closes, period) {
-    if (closes.length < period) return 50; // yetersiz data => nötr
-
-    // Mümkünse talib vs. library kullanın:
-    // Örnek talib:
-    // const result = talib.execute({
-    //   name: 'RSI',
-    //   startIdx: 0,
-    //   endIdx: closes.length - 1,
-    //   inReal: closes,
-    //   optInTimePeriod: period
-    // });
-    // return result.result.outReal.slice(-1)[0]; // son RSI değeri
-
-    // Demo: Kendi basit RSI implementasyonu (örnek, tam doğru olmayabilir)
-    const slice = closes.slice(-period - 1);
-    let gains = 0;
-    let losses = 0;
-    for (let i = 1; i < slice.length; i++) {
-      const diff = slice[i] - slice[i - 1];
-      if (diff >= 0) {
-        gains += diff;
-      } else {
-        losses += Math.abs(diff);
-      }
+        return { upperBand, lowerBand };
     }
-    const avgGain = gains / period;
-    const avgLoss = losses / period;
-    if (avgLoss === 0) return 100;
-    const rs = avgGain / avgLoss;
-    const rsi = 100 - 100 / (1 + rs);
-    return rsi;
-  }
+
+    /**
+     * Basit RSI hesaplama
+     */
+    calculateRSI(closes, period) {
+        if (closes.length < period + 1) return 50; // yetersiz data => nötr
+
+        let gains = 0;
+        let losses = 0;
+        for (let i = 1; i <= period; i++) {
+            const diff = closes[i] - closes[i - 1];
+            if (diff >= 0) {
+                gains += diff;
+            } else {
+                losses += Math.abs(diff);
+            }
+        }
+
+        let avgGain = gains / period;
+        let avgLoss = losses / period;
+
+        for (let i = period + 1; i < closes.length; i++) {
+            const diff = closes[i] - closes[i - 1];
+            if (diff >= 0) {
+                avgGain = (avgGain * (period - 1) + diff) / period;
+                avgLoss = (avgLoss * (period - 1)) / period;
+            } else {
+                avgGain = (avgGain * (period - 1)) / period;
+                avgLoss = (avgLoss * (period - 1) + Math.abs(diff)) / period;
+            }
+        }
+
+        if (avgLoss === 0) return 100;
+        const rs = avgGain / avgLoss;
+        const rsi = 100 - 100 / (1 + rs);
+        return rsi;
+    }
+
+    /**
+     * MACD hesaplama
+     */
+    calculateMACD(closes, shortPeriod, longPeriod, signalPeriod) {
+        const emaShort = this.calculateEMA(closes, shortPeriod);
+        const emaLong = this.calculateEMA(closes, longPeriod);
+        const macd = emaShort - emaLong;
+        const signal = this.calculateEMA([macd], signalPeriod);
+        const histogram = macd - signal;
+        return { macd, signal, histogram };
+    }
+
+    /**
+     * Stochastic Oscillator hesaplama
+     */
+    calculateStochastic(highs, lows, closes, period, smoothK, smoothD) {
+        const highestHigh = Math.max(...highs.slice(-period));
+        const lowestLow = Math.min(...lows.slice(-period));
+        const lastClose = closes[closes.length - 1];
+
+        const stochKRaw = ((lastClose - lowestLow) / (highestHigh - lowestLow)) * 100;
+        const stochKSmooth = this.calculateEMA([stochKRaw], smoothK);
+        const stochDSmooth = this.calculateEMA([stochKSmooth], smoothD);
+
+        return { stochK: stochKSmooth, stochD: stochDSmooth };
+    }
+
+    /**
+     * Doğrusal Regresyon (LR) hesaplama
+     */
+    calculateLinearRegression(closes) {
+        const n = closes.length;
+        const sumX = (n * (n - 1)) / 2; // Sum of indices 0 to n-1
+        const sumY = closes.reduce((acc, val) => acc + val, 0);
+        const sumXY = closes.reduce((acc, val, idx) => acc + idx * val, 0);
+        const sumX2 = (n * (n - 1) * (2 * n - 1)) / 6;
+
+        const slope = (n * sumXY - sumX * sumY) / (n * sumX2 - Math.pow(sumX, 2));
+        const intercept = (sumY - slope * sumX) / n;
+
+        // Ortalama fiyatı regresyon hattının son noktasına getirmek
+        const lrMiddle = slope * (n - 1) + intercept;
+        return lrMiddle;
+    }
+
+    /**
+     * Standart Sapma Hesaplama
+     */
+    calculateStandardDeviation(closes, mean) {
+        const variance = closes.reduce((acc, val) => acc + Math.pow(val - mean, 2), 0) / closes.length;
+        return Math.sqrt(variance);
+    }
+
+    /**
+   * ATR Hesaplama
+   */
+    calculateATR(highs, lows, closes, period) {
+        const trueRanges = [];
+        for (let i = 1; i < closes.length; i++) {
+            const tr1 = highs[i] - lows[i];
+            const tr2 = Math.abs(highs[i] - closes[i - 1]);
+            const tr3 = Math.abs(lows[i] - closes[i - 1]);
+            const tr = Math.max(tr1, tr2, tr3);
+            trueRanges.push(tr);
+        }
+        const atr = trueRanges.slice(-period).reduce((acc, val) => acc + val, 0) / period;
+        return atr;
+    }
+
+    /**
+     * Linear Regression Channel hesaplama
+     */
+    calculateLinearRegressionChannel(closes, period, scalingType, scalingCoefficient1, scalingCoefficient2, highs, lows) {
+        const lrCloses = closes.slice(-period);
+        const lrMiddle = this.calculateLinearRegression(lrCloses);
+
+        let scaling;
+        if (scalingType === 'ATR') {
+            scaling = this.calculateATR(highs.slice(-period), lows.slice(-period), closes.slice(-period), period);
+        } else {
+            scaling = this.calculateStandardDeviation(lrCloses, lrMiddle);
+        }
+
+        const lrUpper1 = lrMiddle + scalingCoefficient1 * scaling;
+        const lrLower1 = lrMiddle - scalingCoefficient1 * scaling;
+        const lrUpper2 = lrMiddle + scalingCoefficient2 * scaling;
+        const lrLower2 = lrMiddle - scalingCoefficient2 * scaling;
+
+        return { lrMiddle, lrUpper1, lrLower1, lrUpper2, lrLower2 };
+    }
 }
 
 module.exports = MultiTimeframeScalpingStrategy;
