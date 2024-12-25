@@ -27,16 +27,14 @@ class TradingBot {
   async startMarketScanning() {
     while (true) {
       try {
-        logger.info('Scanning all markets for opportunities...');
-        const allSymbols = await this.binanceService.getAllSymbols();
-        const filteredSymbols = allSymbols.filter(symbol => symbol.endsWith('USDT'));
-        const opportunities = await this.marketScanner.scanMarkets(filteredSymbols);
-
-        if (opportunities.length > 0) {
-          logger.info(`Found ${opportunities.length} opportunities.`);
-          await Promise.all(opportunities.map(this.evaluateOpportunity.bind(this)));
-        }
-
+        //logger.info('Scanning all markets for opportunities...');
+        //const allSymbols = await this.binanceService.getAllSymbols();
+        // ...
+        // <--- Eskiden "scanMarkets(allSymbols)" yapıyorduk
+  
+        logger.info('Scanning config-defined 5 coins for opportunities...');
+        await this.marketScanner.scanConfigSymbols(); 
+  
         await new Promise(resolve => setTimeout(resolve, config.marketScanInterval || 300000)); // 5 dakika
       } catch (error) {
         logger.error('Error in market scanning loop:', error);
@@ -56,21 +54,6 @@ class TradingBot {
     }, config.orderCleanupInterval || 60000); // Varsayılan 1 dakika
   }
 
-  async evaluateOpportunity(opportunity) {
-    const { symbol, signal, price, levels } = opportunity;
-
-    try {
-      const positionSize = this.calculatePositionSize(price);
-      if (signal === 'LONG') {
-        await this.binanceService.openPosition(symbol, 'BUY', positionSize,'MARKET', 'LONG');
-      } else if (signal === 'SHORT') {
-        await this.binanceService.openPosition(symbol, 'SELL', positionSize, 'MARKET', 'SHORT');
-      }
-      logger.info(`Opened ${signal} position for ${symbol} at ${price}`);
-    } catch (error) {
-      logger.error(`Error evaluating opportunity for ${symbol}:`, error);
-    }
-  }
 
   calculatePositionSize(price) {
     const balance = config.initialBalance || 1000; // Test için varsayılan bir bakiye

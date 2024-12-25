@@ -106,10 +106,10 @@ class BinanceService {
     try {
       const quantityPrecision = await this.getQuantityPrecision(symbol);
       const pricePrecision = await this.getPricePrecision(symbol);
-  
+
       const adjustedQuantity = parseFloat(quantity).toFixed(quantityPrecision);
       const adjustedPrice = parseFloat(limitPrice).toFixed(pricePrecision);
-  
+
       // Artık "this.positionSideMode === 'Hedge' ? positionSide : undefined" yok
       // Direk positionSide'ı gönderiyoruz:
       const orderData = {
@@ -121,7 +121,7 @@ class BinanceService {
         timeInForce: 'GTC',
         positionSide, // => ÖNEMLİ: Burada 'LONG' veya 'SHORT' gelecek
       };
-  
+
       logger.info(`Placing LIMIT order:`, orderData);
       return await this.client.futuresOrder(orderData);
     } catch (error) {
@@ -327,6 +327,90 @@ class BinanceService {
     return prices;
   }
 
+  async getFuturesDailyStats() {
+    try {
+      // Bu, tüm futures pariteleri için 24h istatistiğini getirir
+      const stats = await this.client.futuresDailyStats();
+      return stats; // array of objects
+    } catch (error) {
+      logger.error('Error fetching futures daily stats:', error);
+      throw error;
+    }
+  }
+
+  /**
+ * Trailing Stop Market emri ile dinamik stop eklemek.
+ * callbackRate: 0.5 => %0.5 fiyat geri çekilmesi durumunda stop tetiklenir
+ */
+  async placeTrailingStopOrder(symbol, side, quantity, callbackRate, positionSide) {
+    try {
+      // 1) Sembolün quantityPrecision değerini alalım
+      const quantityPrecision = await this.getQuantityPrecision(symbol);
+
+      // 2) Miktarı bu precision’a göre ayarlayalım (örn. 2 basamak)
+      const adjustedQuantity = parseFloat(quantity).toFixed(quantityPrecision);
+
+      const orderData = {
+        symbol,
+        side,
+        type: 'TRAILING_STOP_MARKET',
+        quantity: adjustedQuantity,
+        callbackRate: callbackRate.toString(),  // % cinsinden
+        positionSide, // Hedge moddaysanız LONG/SHORT
+      };
+
+      logger.info(`Placing TRAILING_STOP_MARKET order:`, orderData);
+      return await this.client.futuresOrder(orderData);
+    } catch (error) {
+      logger.error(`Error placing trailing stop for ${symbol}:`, error);
+      throw error;
+    }
+  }
+
+  async getTop5SymbolsByVolatility() {
+    try {
+      // 1) Tüm sembolleri al
+      const allSymbols = await this.getAllSymbols();
+      // Yalnızca USDT ile bitenleri filtreleyin (ve isterseniz BTC, BUSD, vb. hariç)
+      const usdtSymbols = allSymbols.filter(sym => sym.endsWith('USDT'));
+
+      // 2) Her sembol için son 4 saatin mumlarını toplayıp volatilite hesapla
+      // Örnek: 5m interval, 48 mum => 4 saat
+      const results = [];
+      for (const symbol of usdtSymbols) {
+        try {
+          const candles = await this.getCandles(symbol, '5m', 48); // 4 saat
+          if (!candles || candles.length < 2) {
+            continue;
+          }
+          // Kapanış fiyatlarını çıkaralım
+          const closes = candles.map(c => parseFloat(c.close));
+          const maxClose = Math.max(...closes);
+          const minClose = Math.min(...closes);
+          if (minClose === 0) {
+            continue;
+          }
+          const volatilityPercent = ((maxClose - minClose) / minClose) * 100;
+          results.push({ symbol, volatility: volatilityPercent });
+        } catch (err) {
+          // bir sembolde hata varsa geç
+          logger.warn(`Skipping ${symbol} due to error: ${err.message}`);
+        }
+      }
+
+      // 3) Azalan sıralama
+      results.sort((a, b) => b.volatility - a.volatility);
+
+      // 4) İlk 5'i al
+      const top5 = results.slice(0, 5).map(item => item.symbol);
+
+      return top5;
+    } catch (error) {
+      logger.error('Error calculating top5 by volatility:', error);
+      return [];
+    }
+  }
+
   /**
    * Aktif pozisyonu olmayan emirleri iptal eder (isteğe bağlı).
    */
@@ -344,6 +428,51 @@ class BinanceService {
       }
     } catch (error) {
       logger.error('Error cancelling unrelated orders:', error);
+    }
+  }
+
+  async checkAndClosePositionsAndOrders() {
+    try {
+      const openPositions = await this.getOpenPositions(); // tüm açık pozisyonlar
+      const positionSymbols = openPositions.map(pos => pos.symbol);
+      const prices = await this.getPrices(openPositions.map(pos => pos.symbol));
+
+      const allOpenOrders = await this.client.futuresOpenOrders();
+      const unrelatedOrders = allOpenOrders.filter(order => !positionSymbols.includes(order.symbol));
+
+      // İlgisiz emirleri iptal et
+      for (const order of unrelatedOrders) {
+        await this.client.futuresCancelOrder({ symbol: order.symbol, orderId: order.orderId });
+        logger.info(`Cancelled unrelated order: ${order.symbol} (Order ID: ${order.orderId})`);
+      }
+
+      for (const position of openPositions) {
+        const symbol = position.symbol;
+        const entryPrice = parseFloat(position.entryPrice);
+        const currentPrice = prices[symbol];
+        const side = parseFloat(position.positionAmt) > 0 ? 'LONG' : 'SHORT';
+
+        // LONG ise => Kar % = (currentPrice - entryPrice) / entryPrice * 100
+        // SHORT ise => Kar % = (entryPrice - currentPrice) / entryPrice * 100
+        let profitPercent = 0;
+        if (side === 'LONG') {
+          profitPercent = (currentPrice - entryPrice) / entryPrice * 100;
+        } else {
+          profitPercent = (entryPrice - currentPrice) / entryPrice * 100;
+        }
+
+        if (profitPercent >= 7) {
+          // %7 kâra ulaşıldı => kapat
+          const closeSide = side === 'LONG' ? 'SELL' : 'BUY';
+          const quantity = Math.abs(parseFloat(position.positionAmt));
+
+          // Market emri ile kapat
+          await this.closePosition(symbol, closeSide, quantity, side);
+          logger.info(`Closed ${side} position for ${symbol} at +7% profit`);
+        }
+      }
+    } catch (error) {
+      logger.error('Error checking positions for +7% profit:', error);
     }
   }
 }

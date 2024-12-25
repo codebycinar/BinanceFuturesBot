@@ -1,6 +1,6 @@
 const logger = require('../utils/logger');
 const { calculateStopLoss, calculateTakeProfit } = require('../utils/priceCalculator');
-const config = require('../config/config'); 
+const config = require('../config/config');
 
 class OrderService {
   constructor(binanceService) {
@@ -11,121 +11,118 @@ class OrderService {
    * Pozisyon boyutu hesaplar (ör. cüzdanın %1'i kadar risk).
    */
   calculatePositionSize(balance, price) {
-    const riskAmount = balance.availableBalance * config.riskPerTrade; 
+    const riskAmount = balance.availableBalance * config.riskPerTrade;
     return parseFloat((riskAmount / price).toFixed(8));
   }
 
-  /**
-   * MARKET emriyle pozisyon açar, ardından Stop-Loss ve Take-Profit emirlerini de girer.
+   /**
+   * Tek fonksiyon: Market emriyle aç, sabit SL, 3 kademeli TP + opsiyonel trailingStop.
    */
-  async openPosition(symbol, signal, currentPrice, levels) {
+   async openPositionWithMultipleTPAndTrailing(
+    symbol,
+    signal,        // 'LONG'|'SHORT'
+    entryPrice,
+    levels,        
+    useTrailingStop = false,  // trailing stop'u aktif etmek için true
+    trailingRate = 0.5        // %0.5 geri çekilmede stop
+  ) {
     try {
+      // 1) Bakiye ve pozisyon büyüklüğü
       const balance = await this.binanceService.getFuturesBalance();
-      const positionSize = this.calculatePositionSize(balance, currentPrice);
+      const positionSize = this.calculatePositionSize(balance, entryPrice);
 
-      // LONG => BUY, SHORT => SELL
+      // 2) Market emriyle pozisyonu aç
       const side = signal === 'LONG' ? 'BUY' : 'SELL';
       const positionSide = signal === 'LONG' ? 'LONG' : 'SHORT';
 
-      // Market emri (BinanceService üstünden)
       const entryOrder = await this.binanceService.placeMarketOrder(
         symbol,
         side,
         positionSize,
         positionSide
       );
-
       if (!entryOrder) {
-        logger.error(`Failed to create entry order for ${symbol}`);
+        logger.error(`Failed to open position for ${symbol}`);
         return null;
       }
 
-      const stopLossPrice = calculateStopLoss(signal === 'LONG' ? 'LONG' : 'SHORT', currentPrice, levels.support);
-      const takeProfitPrice = calculateTakeProfit(signal === 'LONG' ? 'LONG' : 'SHORT', currentPrice, levels.resistance);
-    
-      // Stop-loss
+      // 3) Stop-loss (sabit)
+      const stopLossPrice = this.calculateStopLossPrice(signal, entryPrice, levels);
       await this.binanceService.placeStopLossOrder(
         symbol,
-        signal === 'LONG' ? 'SELL' : 'BUY',
+        side === 'BUY' ? 'SELL' : 'BUY',
         positionSize,
         stopLossPrice,
         positionSide
       );
 
-      // Take-profit
+      // 4) Üç kademeli Take-Profit
+      // TP1 %2, TP2 %4, TP3 %7 (örn.)
+      const tp1Price = signal === 'LONG' ? entryPrice * 1.02 : entryPrice * 0.98;
+      const tp2Price = signal === 'LONG' ? entryPrice * 1.04 : entryPrice * 0.96;
+      const tp3Price = signal === 'LONG' ? entryPrice * 1.07 : entryPrice * 0.93;
+
+      const tp1Qty = positionSize * 0.3;
+      const tp2Qty = positionSize * 0.3;
+      const tp3Qty = positionSize * 0.4;
+
       await this.binanceService.placeTakeProfitOrder(
         symbol,
-        signal === 'LONG' ? 'SELL' : 'BUY',
-        positionSize,
-        takeProfitPrice,
+        side === 'BUY' ? 'SELL' : 'BUY',
+        tp1Qty,
+        tp1Price,
+        positionSide
+      );
+      await this.binanceService.placeTakeProfitOrder(
+        symbol,
+        side === 'BUY' ? 'SELL' : 'BUY',
+        tp2Qty,
+        tp2Price,
+        positionSide
+      );
+      await this.binanceService.placeTakeProfitOrder(
+        symbol,
+        side === 'BUY' ? 'SELL' : 'BUY',
+        tp3Qty,
+        tp3Price,
         positionSide
       );
 
-      logger.info(`Position opened for ${symbol}. SL: ${stopLoss}, TP: ${takeProfit}`);
+      // 5) Trailing Stop (opsiyonel)
+      if (useTrailingStop) {
+        const trailingSide = side === 'BUY' ? 'SELL' : 'BUY';
+        await this.binanceService.placeTrailingStopOrder(
+          symbol,
+          trailingSide,
+          positionSize,
+          trailingRate,
+          positionSide
+        );
+        logger.info(`Trailing Stop enabled at callbackRate: ${trailingRate}%`);
+      }
+
+      logger.info(`Opened position for ${symbol} with multiple TP & trailingStop=${useTrailingStop}`);
       return entryOrder;
     } catch (error) {
-      logger.error(`Failed to open position for ${symbol}:`, error);
+      logger.error(`Error opening multi-TP & trailing position for ${symbol}:`, error);
       return null;
     }
   }
 
   /**
-   * Limit emri ile pozisyon açar.
+   * Örnek bir stop loss hesabı
    */
-  async openLimitPosition(symbol, signal, limitPrice, levels) {
-    try {
-      const balance = await this.binanceService.getFuturesBalance();
-      const positionSize = this.calculatePositionSize(balance, limitPrice);
-
-      // 'LONG' -> side='BUY', positionSide='LONG'
-      // 'SHORT' -> side='SELL', positionSide='SHORT'
-      const side = signal === 'LONG' ? 'BUY' : 'SELL';
-      const positionSide = signal === 'LONG' ? 'LONG' : 'SHORT';
-
-      // Limit emrini gönderiyoruz
-      const limitOrder = await this.binanceService.placeLimitOrder(
-        symbol,
-        side,
-        positionSize,
-        limitPrice,
-        positionSide
-      );
-
-      if (!limitOrder) {
-        logger.error(`Failed to create limit order for ${symbol}`);
-        return null;
-      }
-
-      // Limit emrini koyduk; şimdi SL/TP seviyelerini hesaplayalım
-      const { stopLoss, takeProfit } = this.calculateOrderLevels(signal, limitPrice, levels);
-
-      // Stop-Loss emri
-      await this.binanceService.placeStopLossOrder(
-        symbol,
-        // LONG pozisyonun stop'u SELL tarafındadır; SHORT pozisyonun stop'u BUY
-        side === 'BUY' ? 'SELL' : 'BUY',
-        positionSize,
-        stopLoss,
-        positionSide
-      );
-
-      // Take-Profit emri
-      await this.binanceService.placeTakeProfitOrder(
-        symbol,
-        side === 'BUY' ? 'SELL' : 'BUY',
-        positionSize,
-        takeProfit,
-        positionSide
-      );
-
-      logger.info(`Limit order placed for ${symbol} at ${limitPrice} for signal: ${signal}`);
-      logger.info(`SL: ${stopLoss}, TP: ${takeProfit} orders also placed.`);
-
-      return limitOrder;
-    } catch (error) {
-      logger.error(`Error placing limit position for ${symbol}:`, error);
-      throw error;
+  calculateStopLossPrice(signal, entryPrice, levels) {
+    // Burada dilediğiniz stop-loss hesaplamasını yapabilirsiniz.
+    // Örneğin %2 sabit
+    const slPercent = 0.02;
+    if (signal === 'LONG') {
+      return entryPrice * (1 - slPercent);
+    } else {
+      return entryPrice * (1 + slPercent);
     }
+    // veya destek/direnç levels'a göre:
+    // return calculateStopLoss(signal, entryPrice, levels.support or levels.resistance);
   }
 
   /**

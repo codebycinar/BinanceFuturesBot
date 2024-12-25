@@ -17,7 +17,7 @@ class MarketScanner {
    */
   async getMultiTimeframeLevels(symbol, timeframes) {
     const levels = {};
-  
+
     for (const timeframe of timeframes) {
       try {
         const candles = await this.binanceService.getCandles(symbol, timeframe, 100);
@@ -27,20 +27,20 @@ class MarketScanner {
         }
         const strategy = new SupportResistanceStrategy(candles);
         levels[timeframe] = strategy.findSupportResistanceLevels();
-  
+
         if (
           (!levels[timeframe].support || levels[timeframe].support.length === 0) &&
           (!levels[timeframe].resistance || levels[timeframe].resistance.length === 0)
         ) {
           logger.warn(`No valid support/resistance levels for ${symbol} at ${timeframe}`);
         }
-  
+
         logger.info(`Levels for ${symbol} at ${timeframe}:`, levels[timeframe]);
       } catch (error) {
         logger.error(`Error getting levels for ${symbol} at ${timeframe}:`, error);
       }
     }
-  
+
     return levels;
   }
 
@@ -90,106 +90,188 @@ class MarketScanner {
    */
   async scanMarkets(symbols) {
     const timeframes = config.timeframes;
-    const opportunities = [];
-  
     for (const symbol of symbols) {
       const currentPrice = await this.getCurrentPrice(symbol);
       const levels = await this.getMultiTimeframeLevels(symbol, timeframes);
       const signal = this.validateSignalAcrossTimeframes(levels, currentPrice);
-  
+
       if (signal !== 'NEUTRAL') {
-        // Bir limit order koyacağımız senaryo:
-        // Basit örnek: nearestSupport/resistance ile limitPrice belirleyelim:
-        const nearestSupport = levels[timeframes[0]].support[0]?.price || Infinity;
-        const nearestResistance = levels[timeframes[0]].resistance[0]?.price || Infinity;
-  
-        const distance =
-          signal === 'LONG'
-            ? Math.abs(currentPrice - nearestSupport)
-            : Math.abs(nearestResistance - currentPrice);
-  
-        if (distance / currentPrice <= config.limitOrderTolerance) {
-          // Örnek: Limit Price SHORT sinyalde nearestResistance olsun
-          const limitPrice = signal === 'LONG' ? nearestSupport : nearestResistance;
-  
-          try {
-            // Şimdi OrderService'deki openLimitPosition'a levels veriyoruz
-            await this.orderService.openLimitPosition(
-              symbol,
-              signal,        // 'LONG' veya 'SHORT'
-              limitPrice,
-              levels[timeframes[0]] // Örnek olarak 1. timeframe'in support/resistance'larını yolladık
-            );
-          } catch (error) {
-            logger.error(`Error placing limit position for ${symbol}:`, error);
-          }
-        } else {
-          // Market order fırsatı vs.
-          // ...
-        }
+        await this.orderService.openPositionWithMultipleTPAndTrailing(
+          symbol,
+          signal,
+          currentPrice,
+          levels,
+          true,    // trailingStop
+          0.5      // %0.5
+        );
       }
     }
-  
+
     return opportunities;
   }
+
+  async scanTop5Markets() {
+    try {
+      // 1) En hacimli 5 pariteyi al
+      const top5Symbols = await this.getTop5SymbolsByVolume(this.binanceService);
+
+      // 2) Sadece o sembolleri tarayın
+      for (const symbol of top5Symbols) {
+        await this.scanSymbol(symbol);
+      }
+    } catch (error) {
+      logger.error('Error scanning top 5 symbols:', error);
+    }
+  }
+
+
+  async scanTop5VolatileMarkets() {
+    try {
+      // 1) Son 4 saatlik en volatil 5 sembolü al
+      const top5Symbols = await this.binanceService.getTop5SymbolsByVolatility();
+
+      logger.info(`Top 5 volatile symbols (4h): ${top5Symbols.join(', ')}`);
+
+      // 2) Bu sembollerde tarama yap
+      for (const symbol of top5Symbols) {
+        await this.scanSymbol(symbol, []);
+        // Yukarıdaki "scanSymbol" metodunuz 'opportunities' parametresi ister, 
+        // basitçe boş dizi verebilir veya bunu da revize edebilirsiniz.
+      }
+    } catch (error) {
+      logger.error('Error scanning top 5 volatile symbols:', error);
+    }
+  }
+
+  async scanConfigSymbols() {
+    try {
+      // 1) config içindeki topSymbols
+      const symbols = config.topSymbols; 
+      if (!symbols || symbols.length === 0) {
+        logger.warn('No symbols defined in config.topSymbols');
+        return;
+      }
+
+      logger.info(`Scanning config-defined symbols: ${symbols.join(', ')}`);
+
+      // 2) Her sembolü tek tek tarayalım
+      for (const symbol of symbols) {
+        await this.scanSymbol(symbol);
+      }
+    } catch (error) {
+      logger.error('Error scanning config-defined symbols:', error);
+    }
+  }
+
+  async getTopSymbolsByDailyChange() {
+    try {
+      const stats = await this.binanceService.getFuturesDailyStats();
+      // Filtre USDT biten pariteler
+      const usdtStats = stats.filter(s => s.symbol.endsWith('USDT'));
+      
+      // En çok YÜKSELEN => sort by priceChangePercent desc
+      // parseFloat(...) yapmayı unutmayın
+      usdtStats.sort((a, b) => parseFloat(b.priceChangePercent) - parseFloat(a.priceChangePercent));
+  
+      // İlk 5
+      const topGainers = usdtStats.slice(0, 5).map(item => item.symbol);
+      return topGainers;
+    } catch (err) {
+      logger.error('Error fetching top daily change symbols:', err);
+      return [];
+    }
+  }
+  
 
   /**
    * Tek sembol taraması (örneğin manuel çağrılabilir).
    */
-  async scanSymbol(symbol, opportunities) {
-    logger.info(`\n=== Scanning ${symbol} ===`);
+  async scanSymbol(symbol, opportunities = []) {
+  logger.info(`\n=== Scanning ${symbol} ===`);
 
-    const timeframes = config.timeframes;
-    const levels = {};
+  const timeframes = config.timeframes;
+  const levels = {};
 
-    for (const timeframe of timeframes) {
-      const candles = await this.binanceService.getCandles(symbol, timeframe);
-      const strategy = new SupportResistanceStrategy(candles);
-      levels[timeframe] = strategy.findSupportResistanceLevels();
+  for (const timeframe of timeframes) {
+    const candles = await this.binanceService.getCandles(symbol, timeframe);
+    const strategy = new SupportResistanceStrategy(candles);
+    levels[timeframe] = strategy.findSupportResistanceLevels();
+    logger.info(`Timeframe: ${timeframe}`, formatLevels(levels[timeframe]));
+  }
 
-      logger.info(`\nTimeframe: ${timeframe}`);
-      logger.info(formatLevels(levels[timeframe]));
-    }
+  const currentPrice = await this.getCurrentPrice(symbol);
+  logger.info(`Current price: ${currentPrice}`);
 
-    const currentPrice = await this.getCurrentPrice(symbol);
+  for (const timeframe of timeframes) {
+    const strategy = new SupportResistanceStrategy([]);
+    const signal = strategy.checkSignal(currentPrice, levels[timeframe]);
 
-    logger.info(`\nCurrent price: ${currentPrice}`);
+    if (signal !== 'NEUTRAL') {
+      logger.info(`Signal found: ${signal} on ${timeframe} timeframe`);
 
-    for (const timeframe of timeframes) {
-      const strategy = new SupportResistanceStrategy([]);
-      const signal = strategy.checkSignal(currentPrice, levels[timeframe]);
+      // 1) Mevcut pozisyonları al
+      const openPositions = await this.binanceService.getOpenPositions();
+      const sideIsLong = (signal === 'LONG'); 
+      
+      // Hedge moddaysanız "LONG" = positionSide:'LONG'
+      // One-Way moddaysanız parseFloat(positionAmt) > 0 => LONG, <0 => SHORT
+      let alreadyOpen = false;
 
-      if (signal !== 'NEUTRAL') {
-        logger.info(`Signal found: ${signal} on ${timeframe} timeframe`);
-
-        try {
-          const result = await this.orderService.openPosition(
-            symbol,
-            signal,
-            currentPrice,
-            levels[timeframe]
-          );
-
-          if (result) {
-            logger.info('✨ Trading opportunity detected and position opened!');
-            opportunities.push({
-              symbol,
-              signal,
-              price: currentPrice,
-              timeframe,
-              levels: levels[timeframe]
-            });
+      for (const pos of openPositions) {
+        if (pos.symbol === symbol) {
+          // Hedge moddaysanız “pos.positionSide === 'LONG' or 'SHORT'” check
+          // One-Way moddaysanız parseFloat(pos.positionAmt) > 0 => LONG
+          if (this.binanceService.positionSideMode === 'Hedge') {
+            if (sideIsLong && pos.positionSide === 'LONG') {
+              alreadyOpen = true;
+              break;
+            } else if (!sideIsLong && pos.positionSide === 'SHORT') {
+              alreadyOpen = true;
+              break;
+            }
           } else {
-            logger.info(`No position opened for ${symbol} due to an issue.`);
+            // One-Way mod => positionAmt
+            const posAmt = parseFloat(pos.positionAmt);
+            if (sideIsLong && posAmt > 0) {
+              alreadyOpen = true;
+              break;
+            } else if (!sideIsLong && posAmt < 0) {
+              alreadyOpen = true;
+              break;
+            }
           }
-        } catch (error) {
-          logger.error(`Failed to open position for ${symbol}:`, error);
         }
       }
-    }
 
-    logger.info('=== Scan complete ===\n');
+      if (alreadyOpen) {
+        logger.info(`Skipping ${symbol} (${signal}). Already have an open position in same direction.`);
+        continue; // yeni pozisyon açmıyoruz
+      }
+
+      // 2) Artık pozisyon yoksa, openPositionWithMultipleTPAndTrailing çağır
+      try {
+        const result = await this.orderService.openPositionWithMultipleTPAndTrailing(
+          symbol,
+          signal,
+          currentPrice,
+          levels[timeframe],
+          true,  // trailingStop
+          1.0    // trailingRate => %1
+        );
+
+        if (result) {
+          logger.info(`✨ Position opened for ${symbol} with multi TP + trailing`);
+          opportunities.push({ symbol, signal, price: currentPrice, timeframe, levels: levels[timeframe] });
+        }
+      } catch (error) {
+        logger.error(`Failed to open position for ${symbol}:`, error);
+      }
+    }
   }
+
+  logger.info('=== Scan complete ===\n');
+}
+
 
   /**
    * 1m mumun son kapanış fiyatını alır.
