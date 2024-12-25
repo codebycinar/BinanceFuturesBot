@@ -146,7 +146,7 @@ class MarketScanner {
   async scanConfigSymbols() {
     try {
       // 1) config içindeki topSymbols
-      const symbols = config.topSymbols; 
+      const symbols = config.topSymbols;
       if (!symbols || symbols.length === 0) {
         logger.warn('No symbols defined in config.topSymbols');
         return;
@@ -168,11 +168,11 @@ class MarketScanner {
       const stats = await this.binanceService.getFuturesDailyStats();
       // Filtre USDT biten pariteler
       const usdtStats = stats.filter(s => s.symbol.endsWith('USDT'));
-      
+
       // En çok YÜKSELEN => sort by priceChangePercent desc
       // parseFloat(...) yapmayı unutmayın
       usdtStats.sort((a, b) => parseFloat(b.priceChangePercent) - parseFloat(a.priceChangePercent));
-  
+
       // İlk 5
       const topGainers = usdtStats.slice(0, 5).map(item => item.symbol);
       return topGainers;
@@ -181,104 +181,98 @@ class MarketScanner {
       return [];
     }
   }
-  
+
 
   /**
    * Tek sembol taraması (örneğin manuel çağrılabilir).
    */
-  async scanSymbol(symbol, opportunities = []) {
-  logger.info(`\n=== Scanning ${symbol} ===`);
+  async scanSymbol(symbol) {
+    try {
+      logger.info(`\n=== Scanning ${symbol} ===`);
 
-  const timeframes = config.timeframes;
-  const levels = {};
+      const timeframes = config.timeframes; // Örneğin ['1m', '5m', '15m']
+      const levels = {};
 
-  for (const timeframe of timeframes) {
-    const candles = await this.binanceService.getCandles(symbol, timeframe);
-    const strategy = new SupportResistanceStrategy(candles);
-    levels[timeframe] = strategy.findSupportResistanceLevels();
-    logger.info(`Timeframe: ${timeframe}`, formatLevels(levels[timeframe]));
-  }
+      for (const timeframe of timeframes) {
+        const candles = await this.binanceService.getCandles(symbol, timeframe);
+        const strategy = new SupportResistanceStrategy(candles);
+        levels[timeframe] = strategy.findSupportResistanceLevels();
+        logger.info(`Timeframe: ${timeframe}`, formatLevels(levels[timeframe]));
+      }
 
-  const currentPrice = await this.getCurrentPrice(symbol);
-  logger.info(`Current price: ${currentPrice}`);
+      const currentPrice = await this.binanceService.getCurrentPrice(symbol);
+      logger.info(`Current price: ${currentPrice}`);
 
-  for (const timeframe of timeframes) {
-    const strategy = new SupportResistanceStrategy([]);
-    const signal = strategy.checkSignal(currentPrice, levels[timeframe]);
+      for (const timeframe of timeframes) {
+        const strategy = new SupportResistanceStrategy([]);
+        const signal = strategy.checkSignal(currentPrice, levels[timeframe]);
 
-    if (signal !== 'NEUTRAL') {
-      logger.info(`Signal found: ${signal} on ${timeframe} timeframe`);
+        if (signal !== 'NEUTRAL') {
+          logger.info(`Signal found: ${signal} on ${timeframe} timeframe`);
 
-      // 1) Mevcut pozisyonları al
-      const openPositions = await this.binanceService.getOpenPositions();
-      const sideIsLong = (signal === 'LONG'); 
-      
-      // Hedge moddaysanız "LONG" = positionSide:'LONG'
-      // One-Way moddaysanız parseFloat(positionAmt) > 0 => LONG, <0 => SHORT
-      let alreadyOpen = false;
+          // 1) Mevcut pozisyonları al
+          const openPositions = await this.binanceService.getOpenPositions();
+          const sideIsLong = (signal === 'LONG'); 
+          
+          // Hedge moddaysanız "LONG" = positionSide:'LONG'
+          // One-Way moddaysanız parseFloat(positionAmt) > 0 => LONG, <0 => SHORT
+          let alreadyOpen = false;
 
-      for (const pos of openPositions) {
-        if (pos.symbol === symbol) {
-          // Hedge moddaysanız “pos.positionSide === 'LONG' or 'SHORT'” check
-          // One-Way moddaysanız parseFloat(pos.positionAmt) > 0 => LONG
-          if (this.binanceService.positionSideMode === 'Hedge') {
-            if (sideIsLong && pos.positionSide === 'LONG') {
-              alreadyOpen = true;
-              break;
-            } else if (!sideIsLong && pos.positionSide === 'SHORT') {
-              alreadyOpen = true;
-              break;
+          for (const pos of openPositions) {
+            if (pos.symbol === symbol) {
+              // Hedge moddaysanız “pos.positionSide === 'LONG' or 'SHORT'” check
+              // One-Way moddaysanız parseFloat(pos.positionAmt) > 0 => LONG
+              if (this.binanceService.positionSideMode === 'Hedge') {
+                if (sideIsLong && pos.positionSide === 'LONG') {
+                  alreadyOpen = true;
+                  break;
+                } else if (!sideIsLong && pos.positionSide === 'SHORT') {
+                  alreadyOpen = true;
+                  break;
+                }
+              } else {
+                // One-Way mod => positionAmt
+                const posAmt = parseFloat(pos.positionAmt);
+                if (sideIsLong && posAmt > 0) {
+                  alreadyOpen = true;
+                  break;
+                } else if (!sideIsLong && posAmt < 0) {
+                  alreadyOpen = true;
+                  break;
+                }
+              }
             }
-          } else {
-            // One-Way mod => positionAmt
-            const posAmt = parseFloat(pos.positionAmt);
-            if (sideIsLong && posAmt > 0) {
-              alreadyOpen = true;
-              break;
-            } else if (!sideIsLong && posAmt < 0) {
-              alreadyOpen = true;
-              break;
+          }
+
+          if (alreadyOpen) {
+            logger.info(`Skipping ${symbol} (${signal}). Already have an open position in same direction.`);
+            continue; // yeni pozisyon açmıyoruz
+          }
+
+          // 2) Artık pozisyon yoksa, openPositionWithMultipleTPAndTrailing çağır
+          try {
+            const result = await this.orderService.openPositionWithMultipleTPAndTrailing(
+              symbol,
+              signal,
+              currentPrice,
+              levels[timeframe],
+              config.trailingStop.use,  // Config'den al
+              config.trailingStop.callbackRate // Config'den al
+            );
+
+            if (result) {
+              logger.info(`✨ Position opened for ${symbol} with multi TP + trailing`);
             }
+          } catch (error) {
+            logger.error(`Failed to open position for ${symbol}:`, error);
           }
         }
       }
 
-      if (alreadyOpen) {
-        logger.info(`Skipping ${symbol} (${signal}). Already have an open position in same direction.`);
-        continue; // yeni pozisyon açmıyoruz
-      }
-
-      // 2) Artık pozisyon yoksa, openPositionWithMultipleTPAndTrailing çağır
-      try {
-        const result = await this.orderService.openPositionWithMultipleTPAndTrailing(
-          symbol,
-          signal,
-          currentPrice,
-          levels[timeframe],
-          true,  // trailingStop
-          1.0    // trailingRate => %1
-        );
-
-        if (result) {
-          logger.info(`✨ Position opened for ${symbol} with multi TP + trailing`);
-          opportunities.push({ symbol, signal, price: currentPrice, timeframe, levels: levels[timeframe] });
-        }
-      } catch (error) {
-        logger.error(`Failed to open position for ${symbol}:`, error);
-      }
+      logger.info('=== Scan complete ===\n');
+    } catch (error) {
+      logger.error(`Error scanning symbol ${symbol}:`, error);
     }
-  }
-
-  logger.info('=== Scan complete ===\n');
-}
-
-
-  /**
-   * 1m mumun son kapanış fiyatını alır.
-   */
-  async getCurrentPrice(symbol) {
-    const candles = await this.binanceService.getCandles(symbol, '1m', 1);
-    return parseFloat(candles[0].close);
   }
 }
 

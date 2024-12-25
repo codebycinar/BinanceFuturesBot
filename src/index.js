@@ -27,18 +27,15 @@ class TradingBot {
   async startMarketScanning() {
     while (true) {
       try {
-        //logger.info('Scanning all markets for opportunities...');
-        //const allSymbols = await this.binanceService.getAllSymbols();
-        // ...
-        // <--- Eskiden "scanMarkets(allSymbols)" yapıyorduk
-  
-        logger.info('Scanning config-defined 5 coins for opportunities...');
+        logger.info('Scanning config-defined 5 coins for opportunities...', { timestamp: new Date().toISOString() });
         await this.marketScanner.scanConfigSymbols(); 
-  
-        await new Promise(resolve => setTimeout(resolve, config.marketScanInterval || 300000)); // 5 dakika
+
+        // 5 dk bekleme
+        await new Promise(resolve => setTimeout(resolve, config.marketScanInterval || 300000));
       } catch (error) {
         logger.error('Error in market scanning loop:', error);
-        await new Promise(resolve => setTimeout(resolve, 60000)); // 1 dakika
+        // Hata durumunda 1 dk bekleyip tekrar dene
+        await new Promise(resolve => setTimeout(resolve, 60000));
       }
     }
   }

@@ -76,23 +76,18 @@ class BinanceService {
   async placeMarketOrder(symbol, side, quantity, positionSide) {
     try {
       const quantityPrecision = await this.getQuantityPrecision(symbol);
-      const adjustedQuantity = this.adjustPrecision(quantity, quantityPrecision);
+      const adjustedQuantity = parseFloat(quantity).toFixed(quantityPrecision);
 
-      logger.info(`Placing MARKET order:
-        Symbol: ${symbol}
-        Side: ${side}
-        Position Side: ${positionSide}
-        Quantity: ${adjustedQuantity}
-      `);
-
-      return await this.client.futuresOrder({
+      const orderData = {
         symbol,
         side,
         type: 'MARKET',
-        quantity: adjustedQuantity.toString(),
-        // Hedge modundaysak positionSide göndeririz
-        positionSide: this.positionSideMode === 'Hedge' ? positionSide : undefined
-      });
+        quantity: adjustedQuantity,
+        positionSide,
+      };
+
+      logger.info(`Placing MARKET order:`, orderData);
+      return await this.client.futuresOrder(orderData);
     } catch (error) {
       logger.error(`Error placing market order for ${symbol}:`, error);
       throw error;
@@ -138,26 +133,22 @@ class BinanceService {
       const pricePrecision = await this.getPricePrecision(symbol);
       const quantityPrecision = await this.getQuantityPrecision(symbol);
 
-      const adjustedStopPrice = this.adjustPrecision(stopPrice, pricePrecision);
-      const adjustedQuantity = this.adjustPrecision(quantity, quantityPrecision);
+      const adjustedStopPrice = parseFloat(stopPrice).toFixed(pricePrecision);
+      const adjustedQuantity = parseFloat(quantity).toFixed(quantityPrecision);
 
       const orderData = {
         symbol,
         side,
         type: 'STOP_MARKET',
-        stopPrice: adjustedStopPrice.toString(),
-        quantity: adjustedQuantity.toString()
+        quantity: adjustedQuantity,
+        stopPrice: adjustedStopPrice,
+        positionSide,
       };
 
-      // Hedge modundaysak positionSide ve reduceOnly ayarı
-      if (this.positionSideMode === 'Hedge') {
-        orderData.positionSide = positionSide;
-      }
-
-      logger.info(`Placing STOP_MARKET order (Stop-Loss) for ${symbol}:`, orderData);
+      logger.info(`Placing STOP_MARKET order:`, orderData);
       return await this.client.futuresOrder(orderData);
     } catch (error) {
-      logger.error(`Error placing stop loss for ${symbol}:`, error);
+      logger.error(`Error placing stop loss order for ${symbol}:`, error);
       throw error;
     }
   }
@@ -165,31 +156,27 @@ class BinanceService {
   /**
    * Take-Profit emri (Take-Profit-Market) oluşturur. LONG pozisyon -> SELL, SHORT pozisyon -> BUY.
    */
-  async placeTakeProfitOrder(symbol, side, quantity, takeProfitPrice, positionSide) {
+  async placeTakeProfitOrder(symbol, side, quantity, price, positionSide) {
     try {
       const pricePrecision = await this.getPricePrecision(symbol);
       const quantityPrecision = await this.getQuantityPrecision(symbol);
 
-      const adjustedTPPrice = this.adjustPrecision(takeProfitPrice, pricePrecision);
-      const adjustedQuantity = this.adjustPrecision(quantity, quantityPrecision);
+      const adjustedPrice = parseFloat(price).toFixed(pricePrecision);
+      const adjustedQuantity = parseFloat(quantity).toFixed(quantityPrecision);
 
       const orderData = {
         symbol,
         side,
         type: 'TAKE_PROFIT_MARKET',
-        stopPrice: adjustedTPPrice.toString(),
-        quantity: adjustedQuantity.toString()
+        quantity: adjustedQuantity,
+        stopPrice: adjustedPrice, // Binance'da TAKE_PROFIT_MARKET için stopPrice kullanılır
+        positionSide,
       };
 
-      // Hedge modundaysak positionSide ve reduceOnly ayarı
-      if (this.positionSideMode === 'Hedge') {
-        orderData.positionSide = positionSide;
-      }
-
-      logger.info(`Placing TAKE_PROFIT_MARKET order for ${symbol}:`, orderData);
+      logger.info(`Placing TAKE_PROFIT_MARKET order:`, orderData);
       return await this.client.futuresOrder(orderData);
     } catch (error) {
-      logger.error(`Error placing take profit for ${symbol}:`, error);
+      logger.error(`Error placing take profit order for ${symbol}:`, error);
       throw error;
     }
   }
@@ -227,11 +214,11 @@ class BinanceService {
    */
   async getFuturesBalance() {
     try {
-      const balances = await this.client.futuresAccountBalance();
-      const usdtBalance = balances.find(b => b.asset === 'USDT');
-      return usdtBalance || { availableBalance: '0' };
+      const accountInfo = await this.client.futuresAccount();
+      const balance = accountInfo.assets.find(asset => asset.asset === 'USDT');
+      return balance || { availableBalance: 0 };
     } catch (error) {
-      logger.error('Error getting futures balance:', error);
+      logger.error('Error fetching futures balance:', error);
       throw error;
     }
   }
@@ -260,13 +247,10 @@ class BinanceService {
     try {
       const exchangeInfo = await this.client.futuresExchangeInfo();
       const symbolInfo = exchangeInfo.symbols.find(s => s.symbol === symbol);
-      if (!symbolInfo) {
-        throw new Error(`Symbol ${symbol} not found`);
-      }
-      return symbolInfo.pricePrecision;
+      return symbolInfo ? symbolInfo.pricePrecision : 2; // Varsayılan precision
     } catch (error) {
-      logger.error(`Error fetching price precision for ${symbol}:`, error);
-      throw error;
+      logger.error(`Error fetching exchange info for ${symbol}:`, error);
+      return 2; // Hata durumunda varsayılan precision
     }
   }
 
@@ -277,13 +261,10 @@ class BinanceService {
     try {
       const exchangeInfo = await this.client.futuresExchangeInfo();
       const symbolInfo = exchangeInfo.symbols.find(s => s.symbol === symbol);
-      if (!symbolInfo) {
-        throw new Error(`Symbol ${symbol} not found`);
-      }
-      return symbolInfo.quantityPrecision;
+      return symbolInfo ? symbolInfo.quantityPrecision : 8; // Varsayılan precision
     } catch (error) {
-      logger.error(`Error fetching quantity precision for ${symbol}:`, error);
-      throw error;
+      logger.error(`Error fetching exchange info for ${symbol}:`, error);
+      return 8; // Hata durumunda varsayılan precision
     }
   }
 
@@ -346,8 +327,7 @@ class BinanceService {
     try {
       // 1) Sembolün quantityPrecision değerini alalım
       const quantityPrecision = await this.getQuantityPrecision(symbol);
-
-      // 2) Miktarı bu precision’a göre ayarlayalım (örn. 2 basamak)
+      // 2) Miktarı bu precision’a göre ayarlayalım
       const adjustedQuantity = parseFloat(quantity).toFixed(quantityPrecision);
 
       const orderData = {
@@ -355,8 +335,8 @@ class BinanceService {
         side,
         type: 'TRAILING_STOP_MARKET',
         quantity: adjustedQuantity,
-        callbackRate: callbackRate.toString(),  // % cinsinden
-        positionSide, // Hedge moddaysanız LONG/SHORT
+        callbackRate: callbackRate.toString(),
+        positionSide,
       };
 
       logger.info(`Placing TRAILING_STOP_MARKET order:`, orderData);
