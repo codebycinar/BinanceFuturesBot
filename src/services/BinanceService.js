@@ -1,3 +1,4 @@
+// BinanceService.js
 const Binance = require('binance-api-node').default;
 const config = require('../config/config');
 const { validateApiCredentials } = require('../utils/validators');
@@ -24,9 +25,19 @@ class BinanceService {
    * Binance tarafında One-Way mi, Hedge mi kullanılacağını öğrenir.
    */
   async initialize() {
-    this.positionSideMode = 'Hedge';
+    try {
+      const dualSide = await this.fetchPositionSideDual();
+      this.positionSideMode = dualSide.dualSidePosition ? 'Hedge' : 'One-Way';
+      logger.info(`Position Side Mode set to: ${this.positionSideMode}`);
+    } catch (error) {
+      logger.error('Error initializing BinanceService:', error);
+      throw error;
+    }
   }
 
+  /**
+   * Binance API'sinden Position Side Mode bilgisini alır.
+   */
   async fetchPositionSideDual() {
     const timestamp = Date.now();
     const queryString = `timestamp=${timestamp}`;
@@ -39,11 +50,15 @@ class BinanceService {
 
     const headers = { 'X-MBX-APIKEY': config.apiKey };
 
-    const { data } = await axios.get(url, { headers });
-    // data => { dualSidePosition: true/false }
-    return data;
+    try {
+      const { data } = await axios.get(url, { headers });
+      // data => { dualSidePosition: true/false }
+      return data;
+    } catch (error) {
+      logger.error('Error fetching position side mode:', error);
+      throw error;
+    }
   }
-
 
   /**
    * Mevcut açık futures pozisyonlarını getirir.
@@ -61,11 +76,24 @@ class BinanceService {
   /**
    * Tüm açık emirleri (futures) getirir.
    */
-  async getOpenOrders(symbol) {
+  async getAllOpenOrders() {
     try {
-      return await this.client.futuresOpenOrders({ symbol });
+      return await this.client.futuresOpenOrders();
     } catch (error) {
-      logger.error('Error fetching open orders:', error);
+      logger.error('Error fetching all open orders:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Emir iptal etme fonksiyonu
+   */
+  async cancelOrder(symbol, orderId) {
+    try {
+      await this.client.futuresCancelOrder({ symbol, orderId });
+      logger.info(`Cancelled order ${orderId} for ${symbol}`);
+    } catch (error) {
+      logger.error(`Error cancelling order ${orderId} for ${symbol}:`, error);
       throw error;
     }
   }
@@ -105,8 +133,6 @@ class BinanceService {
       const adjustedQuantity = parseFloat(quantity).toFixed(quantityPrecision);
       const adjustedPrice = parseFloat(limitPrice).toFixed(pricePrecision);
 
-      // Artık "this.positionSideMode === 'Hedge' ? positionSide : undefined" yok
-      // Direk positionSide'ı gönderiyoruz:
       const orderData = {
         symbol,
         side,
@@ -182,12 +208,40 @@ class BinanceService {
   }
 
   /**
+   * Trailing Stop Market emri ile dinamik stop eklemek.
+   * callbackRate: 0.5 => %0.5 fiyat geri çekilmesi durumunda stop tetiklenir
+   */
+  async placeTrailingStopOrder(symbol, side, quantity, callbackRate, positionSide) {
+    try {
+      // 1) Sembolün quantityPrecision değerini alalım
+      const quantityPrecision = await this.getQuantityPrecision(symbol);
+      // 2) Miktarı bu precision’a göre ayarlayalım
+      const adjustedQuantity = parseFloat(quantity).toFixed(quantityPrecision);
+
+      const orderData = {
+        symbol,
+        side,
+        type: 'TRAILING_STOP_MARKET',
+        quantity: adjustedQuantity,
+        callbackRate: callbackRate.toString(),
+        positionSide,
+      };
+
+      logger.info(`Placing TRAILING_STOP_MARKET order:`, orderData);
+      return await this.client.futuresOrder(orderData);
+    } catch (error) {
+      logger.error(`Error placing trailing stop for ${symbol}:`, error);
+      throw error;
+    }
+  }
+
+  /**
    * Market emriyle pozisyonu kapatır (örnek: LONG -> SELL).
    */
   async closePosition(symbol, side, quantity, positionSide) {
     try {
       const quantityPrecision = await this.getQuantityPrecision(symbol);
-      const adjustedQuantity = this.adjustPrecision(quantity, quantityPrecision);
+      const adjustedQuantity = parseFloat(quantity).toFixed(quantityPrecision);
 
       logger.info(`Closing position for ${symbol}:
         Side: ${side}
@@ -214,14 +268,15 @@ class BinanceService {
    */
   async getFuturesBalance() {
     try {
-      const accountInfo = await this.client.futuresAccount();
-      const balance = accountInfo.assets.find(asset => asset.asset === 'USDT');
-      return balance || { availableBalance: 0 };
+      const balances = await this.client.futuresAccountBalance();
+      const usdtBalance = balances.find(b => b.asset === 'USDT');
+      return usdtBalance || { availableBalance: '0' };
     } catch (error) {
-      logger.error('Error fetching futures balance:', error);
+      logger.error('Error getting futures balance:', error);
       throw error;
     }
   }
+
 
   /**
    * Belirli sembol için mum verilerini döndürür.
@@ -290,6 +345,16 @@ class BinanceService {
     }
   }
 
+  async getCurrentPrice(symbol) {
+    try {
+      const ticker = await this.client.futuresPrices({ symbol });
+      return parseFloat(ticker[symbol]);
+    } catch (error) {
+      logger.error(`Error fetching current price for ${symbol}:`, error);
+      throw error;
+    }
+  }
+
   /**
    * Bir dizi sembolün son kapanış (1m) fiyatlarını topluca döndürür.
    */
@@ -320,33 +385,8 @@ class BinanceService {
   }
 
   /**
- * Trailing Stop Market emri ile dinamik stop eklemek.
- * callbackRate: 0.5 => %0.5 fiyat geri çekilmesi durumunda stop tetiklenir
- */
-  async placeTrailingStopOrder(symbol, side, quantity, callbackRate, positionSide) {
-    try {
-      // 1) Sembolün quantityPrecision değerini alalım
-      const quantityPrecision = await this.getQuantityPrecision(symbol);
-      // 2) Miktarı bu precision’a göre ayarlayalım
-      const adjustedQuantity = parseFloat(quantity).toFixed(quantityPrecision);
-
-      const orderData = {
-        symbol,
-        side,
-        type: 'TRAILING_STOP_MARKET',
-        quantity: adjustedQuantity,
-        callbackRate: callbackRate.toString(),
-        positionSide,
-      };
-
-      logger.info(`Placing TRAILING_STOP_MARKET order:`, orderData);
-      return await this.client.futuresOrder(orderData);
-    } catch (error) {
-      logger.error(`Error placing trailing stop for ${symbol}:`, error);
-      throw error;
-    }
-  }
-
+   * Top 5 volatil sembolü getirir.
+   */
   async getTop5SymbolsByVolatility() {
     try {
       // 1) Tüm sembolleri al
@@ -388,71 +428,6 @@ class BinanceService {
     } catch (error) {
       logger.error('Error calculating top5 by volatility:', error);
       return [];
-    }
-  }
-
-  /**
-   * Aktif pozisyonu olmayan emirleri iptal eder (isteğe bağlı).
-   */
-  async cancelUnrelatedOrders() {
-    try {
-      const openPositions = await this.getOpenPositions();
-      const positionSymbols = openPositions.map(pos => pos.symbol);
-
-      const allOpenOrders = await this.client.futuresOpenOrders();
-      const unrelatedOrders = allOpenOrders.filter(order => !positionSymbols.includes(order.symbol));
-
-      for (const order of unrelatedOrders) {
-        await this.client.futuresCancelOrder({ symbol: order.symbol, orderId: order.orderId });
-        logger.info(`Cancelled unrelated order: ${order.symbol} (Order ID: ${order.orderId})`);
-      }
-    } catch (error) {
-      logger.error('Error cancelling unrelated orders:', error);
-    }
-  }
-
-  async checkAndClosePositionsAndOrders() {
-    try {
-      const openPositions = await this.getOpenPositions(); // tüm açık pozisyonlar
-      const positionSymbols = openPositions.map(pos => pos.symbol);
-      const prices = await this.getPrices(openPositions.map(pos => pos.symbol));
-
-      const allOpenOrders = await this.client.futuresOpenOrders();
-      const unrelatedOrders = allOpenOrders.filter(order => !positionSymbols.includes(order.symbol));
-
-      // İlgisiz emirleri iptal et
-      for (const order of unrelatedOrders) {
-        await this.client.futuresCancelOrder({ symbol: order.symbol, orderId: order.orderId });
-        logger.info(`Cancelled unrelated order: ${order.symbol} (Order ID: ${order.orderId})`);
-      }
-
-      for (const position of openPositions) {
-        const symbol = position.symbol;
-        const entryPrice = parseFloat(position.entryPrice);
-        const currentPrice = prices[symbol];
-        const side = parseFloat(position.positionAmt) > 0 ? 'LONG' : 'SHORT';
-
-        // LONG ise => Kar % = (currentPrice - entryPrice) / entryPrice * 100
-        // SHORT ise => Kar % = (entryPrice - currentPrice) / entryPrice * 100
-        let profitPercent = 0;
-        if (side === 'LONG') {
-          profitPercent = (currentPrice - entryPrice) / entryPrice * 100;
-        } else {
-          profitPercent = (entryPrice - currentPrice) / entryPrice * 100;
-        }
-
-        if (profitPercent >= 7) {
-          // %7 kâra ulaşıldı => kapat
-          const closeSide = side === 'LONG' ? 'SELL' : 'BUY';
-          const quantity = Math.abs(parseFloat(position.positionAmt));
-
-          // Market emri ile kapat
-          await this.closePosition(symbol, closeSide, quantity, side);
-          logger.info(`Closed ${side} position for ${symbol} at +7% profit`);
-        }
-      }
-    } catch (error) {
-      logger.error('Error checking positions for +7% profit:', error);
     }
   }
 }

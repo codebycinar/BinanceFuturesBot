@@ -1,19 +1,18 @@
-const BinanceService = require('./BinanceService');
-const OrderService = require('./OrderService');
+// MarketScanner.js
 const SupportResistanceStrategy = require('../strategies/SupportResistanceStrategy');
 const { formatLevels } = require('../utils/formatters');
 const config = require('../config/config');
 const logger = require('../utils/logger');
 
 class MarketScanner {
-  constructor() {
-    this.binanceService = new BinanceService();
-    this.orderService = new OrderService(this.binanceService);
+  constructor(binanceService, orderService) {
+    this.binanceService = binanceService;
+    this.orderService = orderService;
+    this.positionSideMode = 'Hedge'; // veya 'One-Way', config'den alabilirsiniz
   }
 
   /**
    * Belirli bir sembol ve zaman dilimleri için destek/direnç seviyelerini bulur.
-   * (Önceki kodunuzdaki getMultiTimeframeLevels metodunu koruyoruz.)
    */
   async getMultiTimeframeLevels(symbol, timeframes) {
     const levels = {};
@@ -46,7 +45,6 @@ class MarketScanner {
 
   /**
    * Çoklu zaman dilimlerine bakarak basit bir LONG/SHORT/NEUTRAL sinyali döndürür.
-   * (Siz kendi mantığınızı ekleyebilirsiniz.)
    */
   validateSignalAcrossTimeframes(levels, currentPrice) {
     if (!levels || Object.keys(levels).length === 0) {
@@ -91,7 +89,7 @@ class MarketScanner {
   async scanMarkets(symbols) {
     const timeframes = config.timeframes;
     for (const symbol of symbols) {
-      const currentPrice = await this.getCurrentPrice(symbol);
+      const currentPrice = await this.binanceService.getCurrentPrice(symbol);
       const levels = await this.getMultiTimeframeLevels(symbol, timeframes);
       const signal = this.validateSignalAcrossTimeframes(levels, currentPrice);
 
@@ -106,14 +104,15 @@ class MarketScanner {
         );
       }
     }
-
-    return opportunities;
   }
 
+  /**
+   * Top 5 sembolü tarar.
+   */
   async scanTop5Markets() {
     try {
       // 1) En hacimli 5 pariteyi al
-      const top5Symbols = await this.getTop5SymbolsByVolume(this.binanceService);
+      const top5Symbols = await this.getTop5SymbolsByVolume();
 
       // 2) Sadece o sembolleri tarayın
       for (const symbol of top5Symbols) {
@@ -124,7 +123,6 @@ class MarketScanner {
     }
   }
 
-
   async scanTop5VolatileMarkets() {
     try {
       // 1) Son 4 saatlik en volatil 5 sembolü al
@@ -134,15 +132,16 @@ class MarketScanner {
 
       // 2) Bu sembollerde tarama yap
       for (const symbol of top5Symbols) {
-        await this.scanSymbol(symbol, []);
-        // Yukarıdaki "scanSymbol" metodunuz 'opportunities' parametresi ister, 
-        // basitçe boş dizi verebilir veya bunu da revize edebilirsiniz.
+        await this.scanSymbol(symbol);
       }
     } catch (error) {
       logger.error('Error scanning top 5 volatile symbols:', error);
     }
   }
 
+  /**
+   * Config'den tanımlanan sembolleri tarar.
+   */
   async scanConfigSymbols() {
     try {
       // 1) config içindeki topSymbols
@@ -163,28 +162,28 @@ class MarketScanner {
     }
   }
 
-  async getTopSymbolsByDailyChange() {
+  /**
+   * Aktif pozisyonu olmayan emirleri iptal eder (isteğe bağlı).
+   */
+  async cancelUnrelatedOrders() {
     try {
-      const stats = await this.binanceService.getFuturesDailyStats();
-      // Filtre USDT biten pariteler
-      const usdtStats = stats.filter(s => s.symbol.endsWith('USDT'));
+      const openPositions = await this.binanceService.getOpenPositions();
+      const positionSymbols = openPositions.map(pos => pos.symbol);
 
-      // En çok YÜKSELEN => sort by priceChangePercent desc
-      // parseFloat(...) yapmayı unutmayın
-      usdtStats.sort((a, b) => parseFloat(b.priceChangePercent) - parseFloat(a.priceChangePercent));
+      const allOpenOrders = await this.binanceService.getAllOpenOrders();
+      const unrelatedOrders = allOpenOrders.filter(order => !positionSymbols.includes(order.symbol));
 
-      // İlk 5
-      const topGainers = usdtStats.slice(0, 5).map(item => item.symbol);
-      return topGainers;
-    } catch (err) {
-      logger.error('Error fetching top daily change symbols:', err);
-      return [];
+      for (const order of unrelatedOrders) {
+        await this.binanceService.cancelOrder(order.symbol, order.orderId);
+        logger.info(`Cancelled unrelated order: ${order.symbol} (Order ID: ${order.orderId})`);
+      }
+    } catch (error) {
+      logger.error('Error cancelling unrelated orders:', error);
     }
   }
 
-
   /**
-   * Tek sembol taraması (örneğin manuel çağrılabilir).
+   * Belirli bir sembolü tarar ve pozisyon açma işlemlerini gerçekleştirir.
    */
   async scanSymbol(symbol) {
     try {
@@ -200,7 +199,7 @@ class MarketScanner {
         logger.info(`Timeframe: ${timeframe}`, formatLevels(levels[timeframe]));
       }
 
-      const currentPrice = await this.binanceService.getCurrentPrice(symbol);
+      const currentPrice = await this.binanceService.getCurrentPrice(symbol); // Fonksiyon tanımlandı
       logger.info(`Current price: ${currentPrice}`);
 
       for (const timeframe of timeframes) {
@@ -222,7 +221,7 @@ class MarketScanner {
             if (pos.symbol === symbol) {
               // Hedge moddaysanız “pos.positionSide === 'LONG' or 'SHORT'” check
               // One-Way moddaysanız parseFloat(pos.positionAmt) > 0 => LONG
-              if (this.binanceService.positionSideMode === 'Hedge') {
+              if (this.positionSideMode === 'Hedge') {
                 if (sideIsLong && pos.positionSide === 'LONG') {
                   alreadyOpen = true;
                   break;

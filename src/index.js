@@ -1,13 +1,16 @@
+// index.js
 const BinanceService = require('./services/BinanceService');
 const MarketScanner = require('./services/MarketScanner');
+const OrderService = require('./services/OrderService');
 const logger = require('./utils/logger');
 const config = require('./config/config');
 
 class TradingBot {
   constructor() {
+    // Tek bir BinanceService instance'ı oluşturuyoruz
     this.binanceService = new BinanceService();
-    this.marketScanner = new MarketScanner();
-   
+    this.orderService = new OrderService(this.binanceService);
+    this.marketScanner = new MarketScanner(this.binanceService, this.orderService);
   }
 
   async start() {
@@ -27,7 +30,7 @@ class TradingBot {
   async startMarketScanning() {
     while (true) {
       try {
-        logger.info('Scanning config-defined 5 coins for opportunities...', { timestamp: new Date().toISOString() });
+        logger.info('Scanning config-defined symbols for opportunities...', { timestamp: new Date().toISOString() });
         await this.marketScanner.scanConfigSymbols(); 
 
         // 5 dk bekleme
@@ -49,13 +52,6 @@ class TradingBot {
         logger.error('Error during order cleanup:', error);
       }
     }, config.orderCleanupInterval || 60000); // Varsayılan 1 dakika
-  }
-
-
-  calculatePositionSize(price) {
-    const balance = config.initialBalance || 1000; // Test için varsayılan bir bakiye
-    const riskPerTrade = config.riskPerTrade || 0.01; // %1 risk
-    return (balance * riskPerTrade) / price;
   }
 }
 
