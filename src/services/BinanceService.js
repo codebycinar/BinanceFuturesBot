@@ -5,6 +5,7 @@ const config = require('../config/config');
 const { validateApiCredentials } = require('../utils/validators');
 const logger = require('../utils/logger');
 const ti = require('technicalindicators'); // Teknik göstergeler için kütüphane
+const axios = require('axios');
 
 class BinanceService {
   constructor() {
@@ -53,7 +54,7 @@ class BinanceService {
         low: c.low,
         close: c.close,
         volume: c.volume,
-        timestamp: c.openTime
+        timestamp: c.closeTime,
       }));
     } catch (error) {
       logger.error(`Error fetching candles for ${symbol}:`, error);
@@ -100,91 +101,229 @@ class BinanceService {
   }
 
   /**
-   * Market emri ile pozisyon açar (LONG -> BUY, SHORT -> SELL).
-   */
-  async placeMarketOrder(symbol, side, quantity, positionSide) {
+     * Market emri ile pozisyon açar (LONG -> BUY, SHORT -> SELL).
+     */
+  async placeMarketOrder({ symbol, side, quantity, positionSide }) {
     try {
+      const orderData = {
+        symbol,
+        side,
+        type: 'MARKET',
+        quantity,
+        positionSide,
+      };
+
+      logger.info(`Sending MARKET order to Binance:`, orderData);
+      return await this.client.futuresOrder(orderData);
+    } catch (error) {
+      logger.error(`Error in Binance API MARKET order for ${symbol}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Limit emri ile pozisyon açar (örn. LONG -> BUY, SHORT -> SELL).
+   */
+  /**
+    * Limit emri ile pozisyon açar (örn. LONG -> BUY, SHORT -> SELL).
+    */
+  async placeLimitOrder(symbol, side, quantity, limitPrice, positionSide) {
+    try {
+      if (!this.exchangeInfo || !this.exchangeInfo[symbol]) {
+        throw new Error(`Exchange info for ${symbol} not found.`);
+      }
+      const pricePrecision = this.getPricePrecision(symbol);
+      const quantityPrecision = this.getQuantityPrecision(symbol);
+      const stepSize = parseFloat(this.exchangeInfo[symbol].filters.LOT_SIZE.stepSize);
+      const tickSize = parseFloat(this.exchangeInfo[symbol].filters.PRICE_FILTER.tickSize);
+
+      const adjustedQuantity = parseFloat(quantity).toFixed(quantityPrecision);
+      const adjustedPrice = parseFloat(limitPrice).toFixed(pricePrecision);
+
+      if (adjustedQuantity <= 0 || adjustedQuantity % stepSize !== 0) {
+        throw new Error(`Invalid quantity after adjustment: ${adjustedQuantity}`);
+      }
+      if (adjustedPrice % tickSize !== 0) {
+        throw new Error(`Invalid price after adjustment: ${adjustedPrice}`);
+      }
+
+      const orderData = {
+        symbol,
+        side,
+        type: 'LIMIT',
+        price: adjustedPrice,
+        quantity: adjustedQuantity,
+        timeInForce: 'GTC',
+        positionSide,
+      };
+
+      logger.info('Placing LIMIT order:', orderData);
+      return await this.client.futuresOrder(orderData);
+    } catch (error) {
+      logger.error(`Error placing limit order for ${symbol}:`, error.message);
+      throw error;
+    }
+  }
+
+
+  /**
+   * Stop-Loss emri (Stop-Market) oluşturur. LONG pozisyon -> SELL, SHORT pozisyon -> BUY.
+   */
+  async placeStopLossOrder(symbol, side, quantity, stopPrice, positionSide) {
+    try {
+      const pricePrecision = await this.getPricePrecision(symbol);
       const quantityPrecision = await this.getQuantityPrecision(symbol);
+
+      const adjustedStopPrice = this.adjustPrecision(stopPrice, pricePrecision);
       const adjustedQuantity = this.adjustPrecision(quantity, quantityPrecision);
 
-      logger.info(`Placing MARKET order:
-        Symbol: ${symbol}
-        Side: ${side}
-        Position Side: ${positionSide}
-        Quantity: ${adjustedQuantity}
-      `);
+      const orderData = {
+        symbol,
+        side,
+        type: 'STOP_MARKET',
+        stopPrice: adjustedStopPrice.toString(),
+        quantity: adjustedQuantity.toString(),
+        positionSide: positionSide
+      };
+
+      logger.info(`Placing STOP_MARKET order (Stop-Loss) for ${symbol}:`, orderData);
+      return await this.client.futuresOrder(orderData);
+    } catch (error) {
+      logger.error(`Error placing stop loss for ${symbol}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Take-Profit emri (Take-Profit-Market) oluşturur. LONG pozisyon -> SELL, SHORT pozisyon -> BUY.
+   */
+  async placeTakeProfitOrder(symbol, side, quantity, takeProfitPrice, positionSide) {
+    try {
+      const pricePrecision = await this.getPricePrecision(symbol);
+      const quantityPrecision = await this.getQuantityPrecision(symbol);
+
+      const adjustedTPPrice = this.adjustPrecision(takeProfitPrice, pricePrecision);
+      const adjustedQuantity = this.adjustPrecision(quantity, quantityPrecision);
+
+      const orderData = {
+        symbol,
+        side,
+        type: 'TAKE_PROFIT_MARKET',
+        stopPrice: adjustedTPPrice.toString(),
+        quantity: adjustedQuantity.toString(),
+        positionSide: positionSide
+      };
+
+      // Hedge modundaysak positionSide ve reduceOnly ayarı
+      if (this.positionSideMode === 'Hedge') {
+        orderData.positionSide = positionSide;
+      }
+
+      logger.info(`Placing TAKE_PROFIT_MARKET order for ${symbol}:`, orderData);
+      return await this.client.futuresOrder(orderData);
+    } catch (error) {
+      logger.error(`Error placing take profit for ${symbol}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Trailing Stop Market emri ile dinamik stop eklemek.
+   * callbackRate: 0.5 => %0.5 fiyat geri çekilmesi durumunda stop tetiklenir
+   */
+  async placeTrailingStopOrder(symbol, side, quantity, callbackRate, positionSide) {
+    try {
+      // 1) Sembolün quantityPrecision değerini alalım
+      const quantityPrecision = await this.getQuantityPrecision(symbol);
+      // 2) Miktarı bu precision’a göre ayarlayalım
+      const adjustedQuantity = parseFloat(quantity).toFixed(quantityPrecision);
+
+      const orderData = {
+        symbol,
+        side,
+        type: 'TRAILING_STOP_MARKET',
+        quantity: adjustedQuantity,
+        callbackRate: callbackRate.toString(),
+        positionSide: positionSide
+      };
+
+      logger.info(`Placing TRAILING_STOP_MARKET order:`, orderData);
+      return await this.client.futuresOrder(orderData);
+    } catch (error) {
+      logger.error(`Error placing trailing stop for ${symbol}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Market emriyle pozisyonu kapatır (örnek: LONG -> SELL).
+   */
+  async closePosition(symbol, side, quantity, positionSide) {
+    try {
+      const quantityPrecision = await this.getQuantityPrecision(symbol);
+      const adjustedQuantity = parseFloat(quantity).toFixed(quantityPrecision);
+
+      logger.info(`Closing position for ${symbol}:
+      Side: ${side}
+      Position Side: ${positionSide}
+      Quantity: ${adjustedQuantity}
+    `);
 
       return await this.client.futuresOrder({
         symbol,
         side,
         type: 'MARKET',
         quantity: adjustedQuantity.toString(),
-        // Hedge modundaysak positionSide göndeririz
-        positionSide: positionSide
+        positionSide: this.positionSideMode === 'Hedge' ? positionSide : undefined,
+        reduceOnly: true
       });
     } catch (error) {
-      logger.error(`Error placing market order for ${symbol}:`, error);
+      logger.error(`Error closing position for ${symbol}:`, error);
       throw error;
     }
   }
 
-  /**
-   * Stop-Loss Emirini Yerleştirme
-   */
-  async placeStopLossOrder(symbol, side, quantity, stopPrice, positionSide) {
-    try {
-      await this.client.futuresOrder({
-        symbol,
-        side,
-        type: 'STOP_MARKET',
-        stopPrice,
-        quantity,
-        positionSide,
-        reduceOnly: true
-      });
-    } catch (error) {
-      logger.error(`Error placing stop-loss order for ${symbol}:`, error);
-      throw error;
+  getPrecision(symbol) {
+    if (!this.exchangeInfo || !this.exchangeInfo.symbols) {
+      throw new Error('Exchange info is not loaded');
     }
+
+    const symbolInfo = this.exchangeInfo.symbols.find(s => s.symbol === symbol);
+    if (!symbolInfo) {
+      throw new Error(`Symbol ${symbol} not found in exchange info`);
+    }
+
+    const lotSizeFilter = symbolInfo.filters.find(f => f.filterType === 'LOT_SIZE');
+    if (!lotSizeFilter) {
+      throw new Error(`LOT_SIZE filter not found for ${symbol}`);
+    }
+
+    return parseFloat(lotSizeFilter.stepSize);
   }
 
-  /**
-   * Take-Profit Emirini Yerleştirme
-   */
-  async placeTakeProfitOrder(symbol, side, quantity, takeProfitPrice, positionSide) {
-    try {
-      await this.client.futuresOrder({
-        symbol,
-        side,
-        type: 'TAKE_PROFIT_MARKET',
-        stopPrice: takeProfitPrice,
-        quantity,
-        positionSide,
-        reduceOnly: true
-      });
-    } catch (error) {
-      logger.error(`Error placing take-profit order for ${symbol}:`, error);
-      throw error;
-    }
+
+  roundQuantity(quantity, stepSize) {
+    const precision = Math.floor(Math.log10(1 / stepSize));
+    return parseFloat(quantity.toFixed(precision));
   }
 
-  /**
-   * Trailing Stop Emirini Yerleştirme
-   */
-  async placeTrailingStopOrder(symbol, side, quantity, callbackRate, positionSide) {
+  async cancelOpenOrders(symbol) {
     try {
-      await this.client.futuresOrder({
-        symbol,
-        side,
-        type: 'TRAILING_STOP_MARKET',
-        quantity,
-        callbackRate,
-        positionSide,
-        reduceOnly: true
-      });
+      // O sembol için açık olan tüm emirleri al
+      const openOrders = await this.binanceService.getOpenOrders(symbol);
+
+      // Tüm açık emirleri iptal et
+      for (const order of openOrders) {
+        if (order.reduceOnly) { // Sadece reduce-only emirleri iptal et
+          await this.binanceService.client.futuresCancelOrder({
+            symbol: symbol,
+            orderId: order.orderId,
+          });
+          logger.info(`Cancelled order for ${symbol} with ID ${order.orderId}`);
+        }
+      }
     } catch (error) {
-      logger.error(`Error placing trailing stop order for ${symbol}:`, error);
-      throw error;
+      logger.error(`Error cancelling open orders for ${symbol}:`, error);
     }
   }
 
@@ -193,10 +332,15 @@ class BinanceService {
    */
   async calculateATR(symbol, period) {
     try {
-      const candles = await this.getCandles(symbol, '1m', period + 1);
+
+      // Strateji parametrelerinden timeframe değerini al
+      const timeframe = this.parameters && this.parameters.timeframe ? this.parameters.timeframe : '1h';
+
+
+      const candles = await this.getCandles(symbol, timeframe, period + 1);
       if (candles.length < period + 1) {
         logger.warn(`Not enough candles to calculate ATR for ${symbol}`);
-        return undefined; // undefined döndürmek daha doğru olabilir
+        return undefined;
       }
 
       const highs = candles.map(c => parseFloat(c.high));
@@ -207,13 +351,14 @@ class BinanceService {
         high: highs,
         low: lows,
         close: closes,
-        period: period
+        period: period,
       });
 
       const atr = atrArray.length > 0 ? atrArray[atrArray.length - 1] : undefined;
+      logger.info(`Calculated ATR for ${symbol}: ${atr}`, { timestamp: new Date().toISOString() });
       return atr;
     } catch (error) {
-      logger.error(`Error calculating ATR for ${symbol}:`, error);
+      logger.error(`Error calculating ATR for ${symbol}: ${error.message}`, { timestamp: new Date().toISOString() });
       return undefined;
     }
   }
@@ -237,13 +382,13 @@ class BinanceService {
         high: highs,
         low: lows,
         close: closes,
-        period: period
+        period: period,
       });
 
       const adx = adxArray.length > 0 ? adxArray[adxArray.length - 1].adx : undefined;
       return adx;
     } catch (error) {
-      logger.error(`Error calculating ADX for ${symbol}:`, error);
+      logger.error(`Error calculating ADX for ${symbol}:`, error.message);
       return undefined;
     }
   }
@@ -255,40 +400,117 @@ class BinanceService {
     try {
       const balances = await this.client.futuresAccountBalance();
       const usdtBalance = balances.find(b => b.asset === 'USDT');
-      return usdtBalance || { availableBalance: '0' };
+      return usdtBalance ? parseFloat(usdtBalance.availableBalance) : 0;
     } catch (error) {
       logger.error('Error getting futures balance:', error);
       throw error;
     }
   }
 
-  /**
-   * Miktar hassasiyetini alma
-   */
-  async getQuantityPrecision(symbol) {
+  async fetchExchangeInfo() {
     try {
-      const exchangeInfo = await this.client.futuresExchangeInfo();
-      const symbolInfo = exchangeInfo.symbols.find(s => s.symbol === symbol);
-      return symbolInfo.quantityPrecision;
+      const response = await axios.get('https://fapi.binance.com/fapi/v1/exchangeInfo');
+      this.exchangeInfo = response.data.symbols.reduce((acc, symbol) => {
+        acc[symbol.symbol] = {
+          pricePrecision: symbol.pricePrecision,
+          quantityPrecision: symbol.quantityPrecision,
+          filters: symbol.filters.reduce((filters, filter) => {
+            filters[filter.filterType] = filter;
+            return filters;
+          }, {}),
+        };
+        return acc;
+      }, {});
+      logger.info('Exchange info fetched and parsed successfully.');
     } catch (error) {
-      logger.error(`Error fetching quantity precision for ${symbol}:`, error);
-      return 2; // Varsayılan hassasiyet
+      logger.error('Error fetching exchange info:', error.message);
+      throw error;
+    }
+  }
+
+  async parseExchangeInfo() {
+    try {
+      const exchangeInfo = await fetchExchangeInfo();
+      const symbolsInfo = {};
+
+      // Tüm işlem çiftlerinin bilgilerini işleyin
+      exchangeInfo.symbols.forEach(symbol => {
+        symbolsInfo[symbol.symbol] = {
+          pricePrecision: symbol.pricePrecision, // Fiyat virgül hassasiyeti
+          quantityPrecision: symbol.quantityPrecision, // Miktar virgül hassasiyeti
+          filters: symbol.filters.reduce((acc, filter) => {
+            acc[filter.filterType] = filter;
+            return acc;
+          }, {}), // Tüm filtreleri organize edin
+        };
+      });
+
+      return symbolsInfo;
+    } catch (error) {
+      console.error('Error parsing exchange info:', error.message);
+      throw error;
     }
   }
 
   /**
+   * Sembolün fiyat hassasiyetini döndürür.
+   */
+  getPricePrecision(symbol) {
+    if (!this.exchangeInfo || !this.exchangeInfo[symbol]) {
+      throw new Error(`Exchange info for ${symbol} not found.`);
+    }
+    return this.exchangeInfo[symbol].pricePrecision;
+  }
+
+  getQuantityPrecision(symbol) {
+    if (!this.exchangeInfo || !this.exchangeInfo[symbol]) {
+      throw new Error(`Exchange info for ${symbol} not found.`);
+    }
+    return this.exchangeInfo[symbol].quantityPrecision;
+  }
+
+  async getStepSize(symbol) {
+    try {
+      const exchangeInfo = await this.client.futuresExchangeInfo();
+      const symbolInfo = exchangeInfo.symbols.find(s => s.symbol === symbol);
+      if (!symbolInfo) {
+        logger.error(`Symbol ${symbol} not found in exchange info.`);
+        return '1'; // Varsayılan olarak 1
+      }
+      const lotSizeFilter = symbolInfo.filters.find(f => f.filterType === 'LOT_SIZE');
+      if (!lotSizeFilter) {
+        logger.error(`LOT_SIZE filter not found for ${symbol}.`);
+        return '1'; // Varsayılan olarak 1
+      }
+      logger.info(`Step Size for ${symbol}: ${lotSizeFilter.stepSize}`, { timestamp: new Date().toISOString() });
+      return lotSizeFilter.stepSize;
+    } catch (error) {
+      logger.error(`Error fetching step size for ${symbol}: ${error.message}`, { timestamp: new Date().toISOString() });
+      return '1'; // Varsayılan olarak 1
+    }
+  }
+
+
+  /**
   * Verilen sayıyı, belirtilen hassasiyete (decimal) göre string'e çevirir.
   */
-  adjustPrecision(value, precision) {
-    return parseFloat(value).toFixed(precision);
+  adjustPrecision(value, stepSize) {
+    const precision = Math.floor(Math.log10(1 / stepSize));
+    const adjustedValue = Math.floor(value / stepSize) * stepSize; // Step size ile hizala
+    return parseFloat(adjustedValue.toFixed(precision));
   }
 
   /**
    * Initialize fonksiyonu (eğer gerekiyorsa)
    */
   async initialize() {
-    // Gerekli başlangıç işlemlerini burada yapabilirsiniz
-    // Örneğin, bazı göstergeler için başlangıç verisi yükleme vb.
+    try {
+      await this.fetchExchangeInfo();
+      logger.info('BinanceService initialized with exchange info.');
+    } catch (error) {
+      logger.error('Error initializing BinanceService:', error.message);
+      throw error;
+    }
   }
 }
 

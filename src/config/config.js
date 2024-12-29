@@ -5,11 +5,21 @@ module.exports = {
   apiKey: process.env.BINANCE_API_KEY,
   apiSecret: process.env.BINANCE_API_SECRET,
   testnet: process.env.TESTNET === 'true', // Testnet kullanıyorsanız .env dosyasına TESTNET=true ekleyin
+
+
   strategy: {
-    keyValue: 1, // 'a' parametresi
-    atrPeriod: 10, // 'c' parametresi
-    useHeikinAshi: false, // 'h' parametresi
-    riskRewardRatio: 1, // Risk/Kar Oranı
+    atrPeriod: 14, // ATR göstergesinin periyodu
+    bbPeriod: 20, // Bollinger Bantlarının periyodu
+    bbStdDev: 2, // Bollinger Bantları standart sapması
+    stochasticPeriod: 14, // Stochastic göstergesinin periyodu
+    stochasticSignalPeriod: 3, // Stochastic sinyal periyodu
+    atrLookback: 21, // ATR yön kontrolü için bakılacak mum sayısı
+    allocation: [0.2, 0.3, 0.5], // İlk, ikinci ve üçüncü alımlar için bütçe oranları
+    timeframe: '1h',
+    limit: 100,
+    keyValue: 2,               // ATR çarpanı
+    riskReward: 3,             // Risk/Kar oranı
+    leverage: 10,              // Kaldıraç oranı
   },
   scalpstrategy: {
     rsiPeriod: 14,
@@ -37,22 +47,22 @@ module.exports = {
     riskRewardRatio: 1, // Risk/Kar Oranı
   },
   // Risk ve ödül oranları
-  riskPerTrade: 0.02, // Risk per trade (%1 of account)
-  leverage: 10, // 10x kaldıraç
+  riskPerTrade: 0.01, // Risk per trade (%1 of account)
 
+  calculate_position_size: false,
+  static_position_size: 20, //usdt 
   // Stop-loss ve Take-profit seviyeleri (yüzde cinsinden)
   stopLossPercent: 1, // %1 stop-loss
-  takeProfitPercents: [1.5, 2, 2.5], // TP1: %1.5, TP2: %2, TP3: %2.5
+  takeProfitPercents: [3, 5, 7.5],
 
   // Trailing stop ayarları
   trailingStop: {
-    use: true,
+    use: false,
     callbackRate: 0.5, // %0.5 geri çekilmede stop
   },
 
   // Diğer ayarlar
-  marketScanInterval: 60000, // 1 dakika
-  positionCheckInterval: 60000, // 1 dakika
+  marketScanInterval: 120000, // 2 dakika
   minPriceMovement: 0.0001, // Minimum fiyat hareketi
   limitOrderTolerance: 0.005, // %0.5 mesafe toleransı
 
