@@ -1,278 +1,300 @@
-// MarketScanner.js
-const SupportResistanceStrategy = require('../strategies/SupportResistanceStrategy');
-const { formatLevels } = require('../utils/formatters');
+// services/MarketScanner.js
+
+const BollingerStrategy = require('../strategies/BollingerStrategy');
 const config = require('../config/config');
 const logger = require('../utils/logger');
+const { models } = require('../db/db');
+const { Position } = models;
+
 
 class MarketScanner {
-  constructor(binanceService, orderService) {
-    this.binanceService = binanceService;
-    this.orderService = orderService;
-    this.positionSideMode = 'Hedge'; // veya 'One-Way', config'den alabilirsiniz
-  }
+    constructor(binanceService, orderService) {
+        this.binanceService = binanceService;
+        this.orderService = orderService;
+        this.strategy = new BollingerStrategy('BollingerStrategy');
+        this.positionStates = {};
+    }
 
-  /**
-   * Belirli bir sembol ve zaman dilimleri için destek/direnç seviyelerini bulur.
+    /**
+   * Borsada TRADING durumunda olan tüm sembolleri döndürür.
    */
-  async getMultiTimeframeLevels(symbol, timeframes) {
-    const levels = {};
+    async scanAllSymbols() {
+        try {
+            if (!this.strategy) {
+                logger.error('Strategy instance is missing.');
+                throw new Error('Strategy is not initialized.');
+            }
 
-    for (const timeframe of timeframes) {
-      try {
-        const candles = await this.binanceService.getCandles(symbol, timeframe, 100);
+            await this.strategy.initialize();
+            logger.info('Strategy initialized successfully.');
+
+            const usdtSymbols = await this.binanceService.scanAllSymbols();
+            for (const symbol of usdtSymbols) {
+                await this.scanSymbol(symbol);
+            }
+        } catch (error) {
+            logger.error('Error scanning all symbols:', error);
+        }
+    }
+
+    /**
+     * Config'den tanımlanan sembolleri tarar.
+     */
+    async scanConfigSymbols() {
+        try {
+            const symbols = config.topSymbols;
+            if (!symbols || symbols.length === 0) {
+                logger.warn('No symbols defined in config.topSymbols');
+                return;
+            }
+
+            logger.info(`Scanning config-defined symbols: ${symbols.join(', ')}`, { timestamp: new Date().toISOString() });
+
+            for (const symbol of symbols) {
+                await this.scanSymbol(symbol);
+            }
+        } catch (error) {
+            logger.error('Error scanning config-defined symbols:', error);
+        }
+    }
+
+    /**
+     * Belirli bir sembolü tarar ve pozisyon açma işlemlerini gerçekleştirir.
+     */
+    async scanSymbol(symbol) {
+        try {
+            logger.info(`\n=== Scanning ${symbol} ===`, { timestamp: new Date().toISOString() });
+
+            if (!this.strategy) {
+                throw new Error('Strategy is not initialized');
+            }
+
+            const timeframe = this.strategy.timeframe || '1h';
+            const limit = this.strategy.limit || 100;
+            const candles = await this.binanceService.getCandles(symbol, timeframe, limit);
+
+            if (!candles || candles.length === 0) {
+                logger.warn(`No candles fetched for ${symbol}. Skipping.`);
+                return;
+            }
+
+            //logger.info(`Candles for ${symbol}: ${JSON.stringify(candles)}`);
+
+            // Açık pozisyon kontrolü
+            let position = await Position.findOne({ where: { symbol, isActive: true } });
+            if (position) {
+                logger.info(`Active position found for ${symbol}. Managing position.`);
+                await this.managePosition(position, candles);
+                return;
+            }
+
+            // Yeni sinyal üretme
+            const { signal, stopLoss, takeProfit, allocation: generatedAllocation } = await this.strategy.generateSignal(candles, symbol);
+            // Allocation'ı config.static_position_size olarak ayarlayın
+            const allocation = config.calculate_position_size
+                ? generatedAllocation
+                : config.static_position_size;
+
+            logger.info(`Generated signal for ${symbol}: Signal=${signal}, Allocation=${allocation}`);
+
+            if (signal === 'NEUTRAL') {
+                logger.info(`No actionable signal for ${symbol}.`);
+                return;
+            }
+
+            // Pozisyon açma
+            const currentPrice = candles[candles.length - 1].close; // Şu anki kapanış fiyatı
+            await this.openNewPosition(symbol, signal, currentPrice, stopLoss, takeProfit, allocation);
+        } catch (error) {
+            logger.error(`Error scanning symbol ${symbol}: ${error.message || JSON.stringify(error)}`);
+            logger.error(error.stack);
+        }
+    }
+
+    async managePosition(position, candles) {
+        const now = new Date();
+
+        if (position.nextCandleCloseTime && now < position.nextCandleCloseTime) {
+            logger.info(`Waiting for the next candle close for ${position.symbol}. Next close time: ${position.nextCandleCloseTime}`);
+            return; // Zaman dolmadı, bekle
+        }
+
         if (!candles || candles.length === 0) {
-          logger.warn(`No candles for ${symbol} at timeframe ${timeframe}`);
-          continue;
-        }
-        const strategy = new SupportResistanceStrategy(candles);
-        levels[timeframe] = strategy.findSupportResistanceLevels();
-
-        if (
-          (!levels[timeframe].support || levels[timeframe].support.length === 0) &&
-          (!levels[timeframe].resistance || levels[timeframe].resistance.length === 0)
-        ) {
-          logger.warn(`No valid support/resistance levels for ${symbol} at ${timeframe}`);
+            logger.error(`Candles data is missing or empty for ${position.symbol}`);
+            return;
         }
 
-        logger.info(`Levels for ${symbol} at ${timeframe}:`, levels[timeframe]);
-      } catch (error) {
-        logger.error(`Error getting levels for ${symbol} at ${timeframe}:`, error);
-      }
+        const currentPrice = parseFloat(candles[candles.length - 1].close);
+        const bollingerBands = this.calculateBollingerBands(candles);
+        const { upper, lower } = bollingerBands;
+
+        logger.info(`Managing position for ${position.symbol}:
+            - Current Price: ${currentPrice}
+            - Bollinger Upper: ${upper}, Lower: ${lower}`);
+
+        // Pozisyon kapatma kontrolü
+        if (position.entries > 0 && currentPrice > upper) {
+            logger.info(`Closing LONG position for ${position.symbol}. Price above upper Bollinger band.`);
+            await this.closePosition(position, currentPrice);
+            return;
+        } else if (position.entries < 0 && currentPrice < lower) {
+            logger.info(`Closing SHORT position for ${position.symbol}. Price below lower Bollinger band.`);
+            await this.closePosition(position, currentPrice);
+            return;
+        }
+
+        const step = position.step;
+        if (!step || step < 1) {
+            logger.error(`Invalid step value (${step}) for ${position.symbol}`);
+            return;
+        }
+
+        const allocation = this.strategy.parameters.allocation
+            ? this.strategy.parameters.allocation[step - 1]
+            : config.static_position_size; // Varsayılan bir değer eklenir
+        if (!allocation) {
+            logger.warn(`Allocation value is undefined for step ${step} in strategy parameters.`);
+            return;
+        }
+
+        const quantity = await this.orderService.calculateStaticPositionSize(position.symbol, allocation);
+        if (quantity === 0) {
+            logger.warn(`Static position size could not be calculated for ${position.symbol}. Skipping step ${step}.`);
+            return;
+        }
+
+        await this.orderService.placeMarketOrder({
+            symbol: position.symbol,
+            side: position.entries > 0 ? 'BUY' : 'SELL',
+            quantity,
+            positionSide: position.entries > 0 ? 'LONG' : 'SHORT',
+        });
+
+        logger.info(`Step ${step} executed for ${position.symbol} with quantity ${quantity}.`);
+
+        // Bir sonraki adıma geçiş
+        position.step += 1;
+        position.nextCandleCloseTime = this.getNextCandleCloseTime('1h');
+        await position.save();
     }
 
-    return levels;
-  }
+    // Bollinger bandı hesaplama metodu
+    calculateBollingerBands(candles) {
+        const closePrices = candles.map(c => parseFloat(c.close));
+        const period = 20; // Bollinger Band periyodu
+        const stdDevMultiplier = 2;
 
-  /**
-   * Çoklu zaman dilimlerine bakarak basit bir LONG/SHORT/NEUTRAL sinyali döndürür.
-   */
-  validateSignalAcrossTimeframes(levels, currentPrice) {
-    if (!levels || Object.keys(levels).length === 0) {
-      logger.warn('No levels provided for validation.');
-      return 'NEUTRAL';
+        if (closePrices.length < period) {
+            throw new Error('Not enough data to calculate Bollinger Bands.');
+        }
+
+        const recentPrices = closePrices.slice(-period);
+        const mean = recentPrices.reduce((acc, val) => acc + val, 0) / period;
+        const variance = recentPrices.reduce((acc, val) => acc + Math.pow(val - mean, 2), 0) / period;
+        const stdDev = Math.sqrt(variance);
+
+        return {
+            upper: mean + stdDevMultiplier * stdDev,
+            lower: mean - stdDevMultiplier * stdDev,
+            basis: mean,
+        };
     }
 
-    for (const [timeframe, level] of Object.entries(levels)) {
-      if (!level.support || level.support.length === 0 || !level.resistance || level.resistance.length === 0) {
-        logger.warn(`Missing support/resistance levels for ${timeframe}`);
-        continue;
-      }
+    // Pozisyonu kapatma metodu
+    async closePosition(position, closePrice) {
+        const { symbol, totalAllocation, entries } = position;
+        const side = entries > 0 ? 'SELL' : 'BUY';
+        const positionSide = entries > 0 ? 'LONG' : 'SHORT';
 
-      const nearestSupport = this.findNearestLevel(currentPrice, level.support);
-      const nearestResistance = this.findNearestLevel(currentPrice, level.resistance);
+        try {
+            await this.orderService.closePosition(symbol, side, totalAllocation, positionSide);
 
-      if (nearestSupport && currentPrice < nearestSupport.price) {
-        // Basit örnek olarak, fiyat desteğin altına inmişse LONG
-        return 'LONG';
-      } else if (nearestResistance && currentPrice > nearestResistance.price) {
-        // Fiyat direncin üstüne çıkmışsa SHORT
-        return 'SHORT';
-      }
+            position.isActive = false; // Pozisyonu kapalı olarak işaretle
+            position.closedPrice = closePrice; // Kapanış fiyatını kaydet
+            position.closedAt = new Date(); // Kapanış zamanını kaydet
+            await position.save();
+
+            logger.info(`Position for ${symbol} closed at price ${closePrice}.`);
+        } catch (error) {
+            logger.error(`Error closing position for ${symbol}:`, error);
+        }
     }
 
-    return 'NEUTRAL';
-  }
+    getNextCandleCloseTime(timeframe) {
+        const now = new Date();
+        const nextHour = new Date(now);
+        nextHour.setMinutes(0, 0, 0);
+        nextHour.setHours(now.getHours() + 1);
 
-  /**
-   * Fiyata en yakın destek veya direnci bulmak için yardımcı fonksiyon.
-   */
-  findNearestLevel(price, levels) {
-    return levels.reduce((nearest, level) => {
-      const diff = Math.abs(level.price - price);
-      return diff < Math.abs(nearest.price - price) ? level : nearest;
-    }, levels[0]);
-  }
+        if (timeframe === '1h') {
+            return nextHour;
+        }
 
-  /**
-   * Belirtilen sembolleri tarar, sinyal oluşursa limit veya market emir açtırır.
-   */
-  async scanMarkets(symbols) {
-    const timeframes = config.timeframes;
-    for (const symbol of symbols) {
-      const currentPrice = await this.binanceService.getCurrentPrice(symbol);
-      const levels = await this.getMultiTimeframeLevels(symbol, timeframes);
-      const signal = this.validateSignalAcrossTimeframes(levels, currentPrice);
-
-      if (signal !== 'NEUTRAL') {
-        await this.orderService.openPositionWithMultipleTPAndTrailing(
-          symbol,
-          signal,
-          currentPrice,
-          levels,
-          true,    // trailingStop
-          0.5      // %0.5
-        );
-      }
+        // Diğer zaman dilimleri için ek mantık
+        return null;
     }
-  }
 
-  /**
-   * Top 5 sembolü tarar.
-   */
-  async scanTop5Markets() {
-    try {
-      // 1) En hacimli 5 pariteyi al
-      const top5Symbols = await this.getTop5SymbolsByVolume();
+    async openNewPosition(symbol, signal, entryPrice, stopLoss, takeProfit) {
+        const allocation = config.calculate_position_size
+            ? config.riskPerTrade * await this.binanceService.getFuturesBalance()
+            : config.static_position_size;
 
-      // 2) Sadece o sembolleri tarayın
-      for (const symbol of top5Symbols) {
-        await this.scanSymbol(symbol);
-      }
-    } catch (error) {
-      logger.error('Error scanning top 5 symbols:', error);
+        const quantity = await this.orderService.calculateStaticPositionSize(symbol);
+
+        logger.info(`Opening position for ${symbol}: Entry Price=${entryPrice}, Signal=${signal}, Quantity=${quantity}, Allocation=${allocation} USDT`);
+
+        await this.orderService.placeMarketOrder({
+            symbol,
+            side: signal,
+            quantity,
+            positionSide: signal === 'BUY' ? 'LONG' : 'SHORT',
+        });
+
+        await Position.create({
+            symbol,
+            entries: signal === 'BUY' ? 1 : -1,
+            entryPrices: [entryPrice],
+            totalAllocation: allocation,
+            isActive: true,
+            step: 1,
+            nextCandleCloseTime: this.getNextCandleCloseTime('1h'),
+        });
+
+        logger.info(`New position opened for ${symbol} with allocation ${allocation} USDT.`);
     }
-  }
 
-  async scanTop5VolatileMarkets() {
-    try {
-      // 1) Son 4 saatlik en volatil 5 sembolü al
-      const top5Symbols = await this.binanceService.getTop5SymbolsByVolatility();
 
-      logger.info(`Top 5 volatile symbols (4h): ${top5Symbols.join(', ')}`);
+    async addOrderToPosition(position, entryPrice, allocation) {
+        try {
+            position.entries += 1;
+            position.entryPrices = [...position.entryPrices, entryPrice];
+            position.totalAllocation += allocation;
+            await position.save();
 
-      // 2) Bu sembollerde tarama yap
-      for (const symbol of top5Symbols) {
-        await this.scanSymbol(symbol);
-      }
-    } catch (error) {
-      logger.error('Error scanning top 5 volatile symbols:', error);
-    }
-  }
+            // Emir yönünü belirleme
+            const signal = allocation > 0 ? 'SELL' : 'BUY'; // Signal kesinleşmeli
+            const positionSide = signal === 'BUY' ? 'LONG' : 'SHORT'; // Hedge moduna göre ayarlanabilir
 
-  /**
-   * Config'den tanımlanan sembolleri tarar.
-   */
-  async scanConfigSymbols() {
-    try {
-      // 1) config içindeki topSymbols
-      const symbols = config.topSymbols;
-      if (!symbols || symbols.length === 0) {
-        logger.warn('No symbols defined in config.topSymbols');
-        return;
-      }
-
-      logger.info(`Scanning config-defined symbols: ${symbols.join(', ')}`);
-
-      // 2) Her sembolü tek tek tarayalım
-      for (const symbol of symbols) {
-        await this.scanSymbol(symbol);
-      }
-    } catch (error) {
-      logger.error('Error scanning config-defined symbols:', error);
-    }
-  }
-
-  /**
-   * Aktif pozisyonu olmayan emirleri iptal eder (isteğe bağlı).
-   */
-  async cancelUnrelatedOrders() {
-    try {
-      const openPositions = await this.binanceService.getOpenPositions();
-      const positionSymbols = openPositions.map(pos => pos.symbol);
-
-      const allOpenOrders = await this.binanceService.getAllOpenOrders();
-      const unrelatedOrders = allOpenOrders.filter(order => !positionSymbols.includes(order.symbol));
-
-      for (const order of unrelatedOrders) {
-        await this.binanceService.cancelOrder(order.symbol, order.orderId);
-        logger.info(`Cancelled unrelated order: ${order.symbol} (Order ID: ${order.orderId})`);
-      }
-    } catch (error) {
-      logger.error('Error cancelling unrelated orders:', error);
-    }
-  }
-
-  /**
-   * Belirli bir sembolü tarar ve pozisyon açma işlemlerini gerçekleştirir.
-   */
-  async scanSymbol(symbol) {
-    try {
-      logger.info(`\n=== Scanning ${symbol} ===`);
-
-      const timeframes = config.timeframes; // Örneğin ['1m', '5m', '15m']
-      const levels = {};
-
-      for (const timeframe of timeframes) {
-        const candles = await this.binanceService.getCandles(symbol, timeframe);
-        const strategy = new SupportResistanceStrategy(candles);
-        levels[timeframe] = strategy.findSupportResistanceLevels();
-        logger.info(`Timeframe: ${timeframe}`, formatLevels(levels[timeframe]));
-      }
-
-      const currentPrice = await this.binanceService.getCurrentPrice(symbol); // Fonksiyon tanımlandı
-      logger.info(`Current price: ${currentPrice}`);
-
-      for (const timeframe of timeframes) {
-        const strategy = new SupportResistanceStrategy([]);
-        const signal = strategy.checkSignal(currentPrice, levels[timeframe]);
-
-        if (signal !== 'NEUTRAL') {
-          logger.info(`Signal found: ${signal} on ${timeframe} timeframe`);
-
-          // 1) Mevcut pozisyonları al
-          const openPositions = await this.binanceService.getOpenPositions();
-          const sideIsLong = (signal === 'LONG'); 
-          
-          // Hedge moddaysanız "LONG" = positionSide:'LONG'
-          // One-Way moddaysanız parseFloat(positionAmt) > 0 => LONG, <0 => SHORT
-          let alreadyOpen = false;
-
-          for (const pos of openPositions) {
-            if (pos.symbol === symbol) {
-              // Hedge moddaysanız “pos.positionSide === 'LONG' or 'SHORT'” check
-              // One-Way moddaysanız parseFloat(pos.positionAmt) > 0 => LONG
-              if (this.positionSideMode === 'Hedge') {
-                if (sideIsLong && pos.positionSide === 'LONG') {
-                  alreadyOpen = true;
-                  break;
-                } else if (!sideIsLong && pos.positionSide === 'SHORT') {
-                  alreadyOpen = true;
-                  break;
-                }
-              } else {
-                // One-Way mod => positionAmt
-                const posAmt = parseFloat(pos.positionAmt);
-                if (sideIsLong && posAmt > 0) {
-                  alreadyOpen = true;
-                  break;
-                } else if (!sideIsLong && posAmt < 0) {
-                  alreadyOpen = true;
-                  break;
-                }
-              }
+            if (!signal || allocation <= 0) {
+                logger.error(`Invalid signal or allocation for ${position.symbol}. Signal: ${signal}, Allocation: ${allocation}`);
+                return;
             }
-          }
 
-          if (alreadyOpen) {
-            logger.info(`Skipping ${symbol} (${signal}). Already have an open position in same direction.`);
-            continue; // yeni pozisyon açmıyoruz
-          }
+            const orderData = {
+                symbol: position.symbol,
+                side: signal,
+                quantity: allocation,
+                positionSide,
+            };
 
-          // 2) Artık pozisyon yoksa, openPositionWithMultipleTPAndTrailing çağır
-          try {
-            const result = await this.orderService.openPositionWithMultipleTPAndTrailing(
-              symbol,
-              signal,
-              currentPrice,
-              levels[timeframe],
-              config.trailingStop.use,  // Config'den al
-              config.trailingStop.callbackRate // Config'den al
-            );
-
-            if (result) {
-              logger.info(`✨ Position opened for ${symbol} with multi TP + trailing`);
-            }
-          } catch (error) {
-            logger.error(`Failed to open position for ${symbol}:`, error);
-          }
+            logger.info(`Placing MARKET order for ${position.symbol}:`, orderData);
+            await this.binanceService.placeMarketOrder(orderData);
+        } catch (error) {
+            logger.error(`Error placing market order for ${position.symbol}: ${error.message}`);
+            throw error;
         }
-      }
-
-      logger.info('=== Scan complete ===\n');
-    } catch (error) {
-      logger.error(`Error scanning symbol ${symbol}:`, error);
     }
-  }
+
 }
 
 module.exports = MarketScanner;
