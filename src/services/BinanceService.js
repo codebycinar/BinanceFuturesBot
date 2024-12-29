@@ -428,29 +428,12 @@ class BinanceService {
     }
   }
 
-  async parseExchangeInfo() {
-    try {
-      const exchangeInfo = await fetchExchangeInfo();
-      const symbolsInfo = {};
-
-      // Tüm işlem çiftlerinin bilgilerini işleyin
-      exchangeInfo.symbols.forEach(symbol => {
-        symbolsInfo[symbol.symbol] = {
-          pricePrecision: symbol.pricePrecision, // Fiyat virgül hassasiyeti
-          quantityPrecision: symbol.quantityPrecision, // Miktar virgül hassasiyeti
-          filters: symbol.filters.reduce((acc, filter) => {
-            acc[filter.filterType] = filter;
-            return acc;
-          }, {}), // Tüm filtreleri organize edin
-        };
-      });
-
-      return symbolsInfo;
-    } catch (error) {
-      console.error('Error parsing exchange info:', error.message);
-      throw error;
+  async getExchangeInfo() {
+    if (!this.exchangeInfo) {
+        await this.fetchExchangeInfo();
     }
-  }
+    return this.exchangeInfo;
+}
 
   /**
    * Sembolün fiyat hassasiyetini döndürür.
