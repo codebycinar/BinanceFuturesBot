@@ -4,11 +4,14 @@
   "private": true,
   "scripts": {
     "start": "node src/index.js",
+    "start:market": "node services/MarketScanner.js",
+    "start:position": "node services/PositionManager.js",
     "test": "jest"
   },
   "dependencies": {
     "@binance/futures-connector": "^0.1.6",
     "binance-api-node": "^0.12.9",
+    "colors": "^1.4.0",
     "dotenv": "^16.3.1",
     "play-sound": "^1.1.6",
     "sequelize": "^6.37.5",

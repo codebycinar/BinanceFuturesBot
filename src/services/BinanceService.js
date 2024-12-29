@@ -6,6 +6,7 @@ const { validateApiCredentials } = require('../utils/validators');
 const logger = require('../utils/logger');
 const ti = require('technicalindicators'); // Teknik göstergeler için kütüphane
 const axios = require('axios');
+const colors = require('colors');
 
 class BinanceService {
   constructor() {
@@ -255,13 +256,16 @@ class BinanceService {
     }
   }
 
+
   /**
    * Market emriyle pozisyonu kapatır (örnek: LONG -> SELL).
    */
-  async closePosition(symbol, side, quantity, positionSide) {
+  async closePosition(symbol, side, quantity, positionSide, closePrice) {
     try {
       const quantityPrecision = await this.getQuantityPrecision(symbol);
+      const pricePrecision = await this.getPricePrecision(symbol);
       const adjustedQuantity = parseFloat(quantity).toFixed(quantityPrecision);
+      //const adjustedStopPrice = parseFloat(closePrice).toFixed(pricePrecision);
 
       logger.info(`Closing position for ${symbol}:
       Side: ${side}
@@ -274,11 +278,14 @@ class BinanceService {
         side,
         type: 'MARKET',
         quantity: adjustedQuantity.toString(),
-        positionSide: this.positionSideMode === 'Hedge' ? positionSide : undefined,
-        reduceOnly: true
+        //reduceOnly: true,
+        positionSide: positionSide,
+        //stopPrice: adjustedStopPrice.toString(),
       });
+
+
     } catch (error) {
-      logger.error(`Error closing position for ${symbol}:`, error);
+      console.log(`Error closing position for ${symbol}: ${error.message}`);
       throw error;
     }
   }
@@ -430,10 +437,10 @@ class BinanceService {
 
   async getExchangeInfo() {
     if (!this.exchangeInfo) {
-        await this.fetchExchangeInfo();
+      await this.fetchExchangeInfo();
     }
     return this.exchangeInfo;
-}
+  }
 
   /**
    * Sembolün fiyat hassasiyetini döndürür.
