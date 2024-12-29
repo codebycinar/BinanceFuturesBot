@@ -1,3 +1,4 @@
 node_modules
 .env
 *.log
+src/db/binance_futures_bot.sqlite
