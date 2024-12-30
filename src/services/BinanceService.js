@@ -264,13 +264,16 @@ class BinanceService {
   /**
    * Market emriyle pozisyonu kapatır (örnek: LONG -> SELL).
    */
-  async closePosition(symbol, side) {
-    try {
+  /**
+ * Market emriyle pozisyonu kapatır (örnek: LONG -> SELL).
+ */
+async closePosition(symbol, side) {
+  try {
       // Exchange bilgilerini kontrol et
       const exchangeInfo = await this.getExchangeInfo();
       const symbolInfo = exchangeInfo[symbol];
       if (!symbolInfo) {
-        throw new Error(`Symbol ${symbol} not found in exchange info`);
+          throw new Error(`Symbol ${symbol} not found in exchange info`);
       }
 
       // Açık pozisyon bilgilerini al
@@ -278,51 +281,65 @@ class BinanceService {
       const position = openPositions.find(pos => pos.symbol === symbol);
 
       if (!position) {
-        throw new Error(`No open position found for ${symbol}`);
+          throw new Error(`No open position found for ${symbol}`);
       }
 
       const positionSize = Math.abs(parseFloat(position.positionAmt));
       if (positionSize === 0) {
-        throw new Error(`Position size for ${symbol} is zero.`);
+          throw new Error(`Position size for ${symbol} is zero.`);
       }
 
       // Pozisyon boyutunu hassasiyete göre ayarla
       const quantityPrecision = symbolInfo.quantityPrecision;
       const adjustedQuantity = positionSize.toFixed(quantityPrecision);
 
+      // Mevcut fiyatı al
+      const currentPrice = await this.getCurrentPrice(symbol);
+
+      // Pozisyonun giriş fiyatını al
+      const entryPrice = parseFloat(position.entryPrice);
+
+      // Kar/Zarar hesaplama
+      const profitLoss = (currentPrice - entryPrice) * positionSize * (side === 'SELL' ? 1 : -1); // Long için ters işlem
+      const profitLossUSDT = profitLoss.toFixed(2); // USDT cinsinden yuvarlama
+
       // Satış işlemini gerçekleştir
       const order = await this.client.futuresOrder({
-        symbol,
-        side,
-        type: 'MARKET',
-        quantity: adjustedQuantity,
-        positionSide: position.positionSide, // LONG veya SHORT
+          symbol,
+          side,
+          type: 'MARKET',
+          quantity: adjustedQuantity,
+          positionSide: position.positionSide, // LONG veya SHORT
       });
 
       // Başarılı işlem detaylarını logla ve Telegram'a gönder
       const successMessage = `
-            ✅ Position Closed Successfully:
-            - Symbol: ${symbol}
-            - Side: ${side}
-            - Quantity: ${adjustedQuantity}
-            - Order ID: ${order.orderId || 'N/A'}
-        `;
+          ✅ Position Closed Successfully:
+          - Symbol: ${symbol}
+          - Side: ${side}
+          - Quantity: ${adjustedQuantity}
+          - Entry Price: ${entryPrice}
+          - Close Price: ${currentPrice}
+          - Profit/Loss: ${profitLossUSDT} USDT
+          - Order ID: ${order.orderId || 'N/A'}
+      `;
       this.bot.sendMessage(config.telegramChatId, successMessage);
       logger.info(successMessage);
 
       return order;
-    } catch (error) {
+  } catch (error) {
       const errorMessage = `
-            ❌ Error Closing Position:
-            - Symbol: ${symbol}
-            - Side: ${side}
-            - Error: ${error.message}
-        `;
+          ❌ Error Closing Position:
+          - Symbol: ${symbol}
+          - Side: ${side}
+          - Error: ${error.message}
+      `;
       this.bot.sendMessage(config.telegramChatId, errorMessage);
       logger.error(errorMessage);
       throw error;
-    }
   }
+}
+
 
   getPrecision(symbol) {
     if (!this.exchangeInfo || !this.exchangeInfo.symbols) {
