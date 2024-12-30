@@ -4,7 +4,26 @@ const logger = require('../utils/logger');
 const config = require('../config/config');
 const binanceService = new BinanceService();
 const { Position } = models;
-const ti = require('technicalindicators');
+
+(async () => {
+    try {
+        logger.info('Position Manager started.');
+
+        // Pozisyon yönetimini başlat
+        await positionManager();
+
+        // Periyodik yönetim
+        setInterval(async () => {
+            try {
+                await positionManager();
+            } catch (error) {
+                logger.error('Error during Position Manager periodic execution:', error);
+            }
+        }, 60 * 1000); // 1 dakikada bir çalıştır
+    } catch (error) {
+        logger.error('Error starting Position Manager:', error);
+    }
+})();
 
 async function positionManager() {
     try {
@@ -60,81 +79,118 @@ async function managePosition(position, candles) {
         // Long pozisyon
         if (currentHigh >= upper) {
             logger.info(`Closing LONG position for ${position.symbol}. Condition met (High >= Bollinger Upper).`);
-            await closePosition(position, currentPrice);
+            await closePosition(position.symbol, 'SELL');
         }
     } else if (position.entries < 0) {
         // Short pozisyon
         if (currentLow <= lower) {
             logger.info(`Closing SHORT position for ${position.symbol}. Condition met (Low <= Bollinger Lower).`);
-            await closePosition(position, currentPrice);
+            await closePosition(position.symbol, 'BUY');
         }
     }
 }
 
+// async function closePosition(side, positionSide, position, closePrice) {
+//     try {
+//         const { symbol } = position;
 
-async function closePosition(position, closePrice) {
+//         // BinanceService üzerinden exchangeInfo kontrolü
+//         try {
+//             const quantityPrecision = await binanceService.getQuantityPrecision(symbol);
+//             const pricePrecision = await binanceService.getPricePrecision(symbol);
+//             logger.info(`Precision for ${symbol}: Quantity=${quantityPrecision}, Price=${pricePrecision}`);
+//         } catch (error) {
+//             logger.warn(`Exchange info not found for ${symbol}. Refreshing exchange info...`);
+//             await binanceService.refreshExchangeInfo(); // Exchange info güncelleniyor
+//             throw error; // Hatayı üst metoda geri fırlat
+//         }
+
+//         // Açık pozisyonları al ve kontrol et
+//         const openPositions = await binanceService.getOpenPositions();
+//         const openPosition = openPositions.find(pos => pos.symbol === symbol);
+//         if (!openPosition) {
+//             throw new Error(`No open position found on Binance for ${symbol}`);
+//         }
+
+//         // Mevcut pozisyon boyutunu al
+//         const positionSize = Math.abs(parseFloat(openPosition.positionAmt));
+//         if (positionSize === 0) {
+//             throw new Error(`Position size for ${symbol} is zero.`);
+//         }
+
+//         const quantityPrecision = await binanceService.getQuantityPrecision(symbol);
+//         const adjustedQuantity = positionSize.toFixed(quantityPrecision);
+//         const pricePrecision = await binanceService.getPricePrecision(symbol);
+//         const adjustedStopPrice = parseFloat(closePrice).toFixed(pricePrecision);
+
+//         // Pozisyonu kapat
+//         const order = await binanceService.closePosition(symbol, side, adjustedQuantity, positionSide, adjustedStopPrice);
+//         logger.info(`Position closed on Binance ${symbol} at price ${closePrice}. Order details: ${JSON.stringify(order)}`);
+
+//         // Veritabanını güncelle
+//         position.isActive = false;
+//         position.closedPrice = closePrice;
+//         position.closedAt = new Date();
+//         await position.save();
+
+//         logger.info(`Position for ${symbol} closed at price ${closePrice}.`);
+//         return order;
+//     } catch (error) {
+//         logger.error(`Error closing position for ${position.symbol}:`, error.message);
+//         logger.error(`Stack trace: ${error.stack}`);
+//         throw error;
+//     }
+// }
+
+async function closePosition(symbol, side) {
     try {
-        const { symbol, totalAllocation, entries } = position;
-        const side = entries > 0 ? 'SELL' : 'BUY';
-        const positionSide = entries > 0 ? 'LONG' : 'SHORT';
+        logger.info(`Closing position for ${symbol} with side ${side}.`);
 
-        // BinanceService üzerinden exchangeInfo alınıyor
-        const exchangeInfo = await binanceService.getExchangeInfo();
-        const symbolInfo = exchangeInfo[symbol];
-
-        if (!symbolInfo) {
-            throw new Error(`Exchange info for ${symbol} not found.`);
-        }
-
-        const quantityPrecision = symbolInfo.quantityPrecision;
-        const adjustedQuantity = parseFloat(totalAllocation).toFixed(quantityPrecision);
-
-        logger.info(`Closing position for ${symbol}:
-            Side: ${side}
-            Position Side: ${positionSide}
-            Quantity: ${adjustedQuantity}
-        `);
-
-        // Pozisyonu kapat
-        const order = await binanceService.closePosition(symbol, side, adjustedQuantity, positionSide);
-
+        // BinanceService'e pozisyonu kapatma talebini gönder
+        const order = await binanceService.closePosition(symbol, side);
         // Veritabanını güncelle
         position.isActive = false;
         position.closedPrice = closePrice;
         position.closedAt = new Date();
         await position.save();
 
-        logger.info(`Position for ${symbol} closed at price ${closePrice}.`);
-        return order;
+        logger.info(`Position closed successfully for ${symbol}. Order details: ${JSON.stringify(order)}`);
     } catch (error) {
-        logger.error(`Error closing position for ${position.symbol}:`, error.message);
+        logger.error(`Error closing position for ${symbol}: ${error.message}`);
         throw error;
     }
 }
 
 
-// EMA hesaplama fonksiyonu
-function calculateEMA(period, closePrices) {
-    const emaValues = ti.EMA.calculate({
-        period: period,
-        values: closePrices, // Mumların kapanış fiyatları
-    });
-    return emaValues[emaValues.length - 1]; // Son EMA değerini döndür
-}
-
 async function updateOpenPositions() {
     try {
+        // Binance üzerinde açık pozisyonları al
         const openPositions = await binanceService.getOpenPositions();
 
-        for (const binancePosition of openPositions) {
-            const { symbol, entryPrice } = binancePosition;
+        // Binance üzerinde açık olan sembolleri topla
+        const openSymbols = openPositions.map(pos => pos.symbol);
 
-            // Veritabanındaki pozisyonu bul
-            const position = await Position.findOne({ where: { symbol, isActive: true } });
-            if (position) {
-                position.entryPrices = [parseFloat(entryPrice)];
-                await position.save();
+        // Veritabanındaki tüm açık pozisyonları al
+        const dbOpenPositions = await Position.findAll({ where: { isActive: true } });
 
+        for (const dbPosition of dbOpenPositions) {
+            const { symbol } = dbPosition;
+
+            if (!openSymbols.includes(symbol)) {
+                // Binance üzerinde olmayan pozisyonları kapalı olarak işaretle
+                logger.info(`Marking position as closed for symbol: ${symbol}`);
+                dbPosition.isActive = false;
+                dbPosition.closedAt = new Date();
+                await dbPosition.save();
+                continue;
+            }
+
+            // Binance üzerinde açık olan pozisyonun giriş fiyatını güncelle
+            const binancePosition = openPositions.find(pos => pos.symbol === symbol);
+            if (binancePosition) {
+                const { entryPrice } = binancePosition;
+                dbPosition.entryPrices = [parseFloat(entryPrice)];
+                await dbPosition.save();
                 logger.info(`Updated entry price for ${symbol}: ${entryPrice}`);
             }
         }
@@ -162,25 +218,6 @@ function calculateBollingerBands(candles) {
         lower: mean - stdDevMultiplier * stdDev,
         basis: mean,
     };
-}
-
-async function closePosition(position, closePrice) {
-    try {
-        const { symbol, totalAllocation, entries } = position;
-        const side = entries > 0 ? 'SELL' : 'BUY';
-        const positionSide = entries > 0 ? 'LONG' : 'SHORT';
-
-        await binanceService.closePosition(symbol, side, totalAllocation, positionSide);
-
-        position.isActive = false; // Pozisyonu kapalı olarak işaretle
-        position.closedPrice = closePrice; // Kapanış fiyatını kaydet
-        position.closedAt = new Date(); // Kapanış zamanını kaydet
-        await position.save();
-
-        logger.info(`Position for ${symbol} closed at price ${closePrice}.`);
-    } catch (error) {
-        logger.error(`Error closing position for ${position.symbol}:`, error);
-    }
 }
 
 module.exports = positionManager;

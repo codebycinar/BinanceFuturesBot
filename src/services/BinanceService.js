@@ -6,6 +6,8 @@ const { validateApiCredentials } = require('../utils/validators');
 const logger = require('../utils/logger');
 const ti = require('technicalindicators'); // Teknik göstergeler için kütüphane
 const axios = require('axios');
+const TelegramBot = require('node-telegram-bot-api');
+
 
 class BinanceService {
   constructor() {
@@ -21,6 +23,8 @@ class BinanceService {
     });
 
     this.positionSideMode = config.positionSideMode || 'One-Way'; // 'One-Way' veya 'Hedge'
+    // Telegram Bot'u tanımla
+    this.bot = new TelegramBot(config.telegramBotToken, { polling: false });
   }
 
   /**
@@ -255,33 +259,87 @@ class BinanceService {
     }
   }
 
+
+
   /**
    * Market emriyle pozisyonu kapatır (örnek: LONG -> SELL).
    */
-  async closePosition(symbol, side, quantity, positionSide) {
-    try {
-      const quantityPrecision = await this.getQuantityPrecision(symbol);
-      const adjustedQuantity = parseFloat(quantity).toFixed(quantityPrecision);
+  /**
+ * Market emriyle pozisyonu kapatır (örnek: LONG -> SELL).
+ */
+async closePosition(symbol, side) {
+  try {
+      // Exchange bilgilerini kontrol et
+      const exchangeInfo = await this.getExchangeInfo();
+      const symbolInfo = exchangeInfo[symbol];
+      if (!symbolInfo) {
+          throw new Error(`Symbol ${symbol} not found in exchange info`);
+      }
 
-      logger.info(`Closing position for ${symbol}:
-      Side: ${side}
-      Position Side: ${positionSide}
-      Quantity: ${adjustedQuantity}
-    `);
+      // Açık pozisyon bilgilerini al
+      const openPositions = await this.getOpenPositions();
+      const position = openPositions.find(pos => pos.symbol === symbol);
 
-      return await this.client.futuresOrder({
-        symbol,
-        side,
-        type: 'MARKET',
-        quantity: adjustedQuantity.toString(),
-        positionSide: this.positionSideMode === 'Hedge' ? positionSide : undefined,
-        reduceOnly: true
+      if (!position) {
+          throw new Error(`No open position found for ${symbol}`);
+      }
+
+      const positionSize = Math.abs(parseFloat(position.positionAmt));
+      if (positionSize === 0) {
+          throw new Error(`Position size for ${symbol} is zero.`);
+      }
+
+      // Pozisyon boyutunu hassasiyete göre ayarla
+      const quantityPrecision = symbolInfo.quantityPrecision;
+      const adjustedQuantity = positionSize.toFixed(quantityPrecision);
+
+      // Mevcut fiyatı al
+      const currentPrice = await this.getCurrentPrice(symbol);
+
+      // Pozisyonun giriş fiyatını al
+      const entryPrice = parseFloat(position.entryPrice);
+
+      // Kar/Zarar hesaplama
+      const profitLoss = (currentPrice - entryPrice) * positionSize * (side === 'SELL' ? 1 : -1); // Long için ters işlem
+      const profitLossUSDT = profitLoss.toFixed(2); // USDT cinsinden yuvarlama
+
+      // Satış işlemini gerçekleştir
+      const order = await this.client.futuresOrder({
+          symbol,
+          side,
+          type: 'MARKET',
+          quantity: adjustedQuantity,
+          positionSide: position.positionSide, // LONG veya SHORT
       });
-    } catch (error) {
-      logger.error(`Error closing position for ${symbol}:`, error);
+
+      // Başarılı işlem detaylarını logla ve Telegram'a gönder
+      const successMessage = `
+          ✅ Position Closed Successfully:
+          - Symbol: ${symbol}
+          - Side: ${side}
+          - Quantity: ${adjustedQuantity}
+          - Entry Price: ${entryPrice}
+          - Close Price: ${currentPrice}
+          - Profit/Loss: ${profitLossUSDT} USDT
+          - Order ID: ${order.orderId || 'N/A'}
+      `;
+      this.bot.sendMessage(config.telegramChatId, successMessage);
+      logger.info(successMessage);
+
+      return order;
+  } catch (error) {
+      const errorMessage = `
+          ❌ Error Closing Position:
+          - Symbol: ${symbol}
+          - Side: ${side}
+          - Error: ${error.message}
+      `;
+      this.bot.sendMessage(config.telegramChatId, errorMessage);
+      logger.error(errorMessage);
       throw error;
-    }
   }
+}
+
 
   getPrecision(symbol) {
     if (!this.exchangeInfo || !this.exchangeInfo.symbols) {
@@ -430,10 +488,10 @@ class BinanceService {
 
   async getExchangeInfo() {
     if (!this.exchangeInfo) {
-        await this.fetchExchangeInfo();
+      await this.fetchExchangeInfo();
     }
     return this.exchangeInfo;
-}
+  }
 
   /**
    * Sembolün fiyat hassasiyetini döndürür.

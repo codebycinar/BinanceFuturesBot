@@ -6,6 +6,31 @@ const logger = require('../utils/logger');
 const { models } = require('../db/db');
 const { Position } = models;
 
+(async () => {
+    try {
+        const binanceService = new BinanceService();
+        await binanceService.initialize();
+
+        const orderService = new OrderService(binanceService);
+        const marketScanner = new MarketScanner(binanceService, orderService);
+
+        logger.info('Market Scanner started.');
+
+        // Market taramasını başlat
+        await marketScanner.scanAllSymbols();
+
+        // Periyodik tarama
+        setInterval(async () => {
+            try {
+                await marketScanner.scanAllSymbols();
+            } catch (error) {
+                logger.error('Error during Market Scanner periodic scan:', error);
+            }
+        }, 60 * 1000); // 1 dakikada bir çalıştır
+    } catch (error) {
+        logger.error('Error starting Market Scanner:', error);
+    }
+})();
 
 class MarketScanner {
     constructor(binanceService, orderService) {
