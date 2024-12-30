@@ -79,53 +79,84 @@ async function managePosition(position, candles) {
         // Long pozisyon
         if (currentHigh >= upper) {
             logger.info(`Closing LONG position for ${position.symbol}. Condition met (High >= Bollinger Upper).`);
-            await closePosition('SELL','LONG', position, upper); // Upper band değerini gönderiyoruz
+            await closePosition(position.symbol, 'SELL');
         }
     } else if (position.entries < 0) {
         // Short pozisyon
         if (currentLow <= lower) {
             logger.info(`Closing SHORT position for ${position.symbol}. Condition met (Low <= Bollinger Lower).`);
-            await closePosition('BUY','SHORT', position, lower); // Lower band değerini gönderiyoruz
+            await closePosition(position.symbol, 'BUY');
         }
     }
 }
 
+// async function closePosition(side, positionSide, position, closePrice) {
+//     try {
+//         const { symbol } = position;
 
-async function closePosition(side, positionSide, position, closePrice) {
+//         // BinanceService üzerinden exchangeInfo kontrolü
+//         try {
+//             const quantityPrecision = await binanceService.getQuantityPrecision(symbol);
+//             const pricePrecision = await binanceService.getPricePrecision(symbol);
+//             logger.info(`Precision for ${symbol}: Quantity=${quantityPrecision}, Price=${pricePrecision}`);
+//         } catch (error) {
+//             logger.warn(`Exchange info not found for ${symbol}. Refreshing exchange info...`);
+//             await binanceService.refreshExchangeInfo(); // Exchange info güncelleniyor
+//             throw error; // Hatayı üst metoda geri fırlat
+//         }
+
+//         // Açık pozisyonları al ve kontrol et
+//         const openPositions = await binanceService.getOpenPositions();
+//         const openPosition = openPositions.find(pos => pos.symbol === symbol);
+//         if (!openPosition) {
+//             throw new Error(`No open position found on Binance for ${symbol}`);
+//         }
+
+//         // Mevcut pozisyon boyutunu al
+//         const positionSize = Math.abs(parseFloat(openPosition.positionAmt));
+//         if (positionSize === 0) {
+//             throw new Error(`Position size for ${symbol} is zero.`);
+//         }
+
+//         const quantityPrecision = await binanceService.getQuantityPrecision(symbol);
+//         const adjustedQuantity = positionSize.toFixed(quantityPrecision);
+//         const pricePrecision = await binanceService.getPricePrecision(symbol);
+//         const adjustedStopPrice = parseFloat(closePrice).toFixed(pricePrecision);
+
+//         // Pozisyonu kapat
+//         const order = await binanceService.closePosition(symbol, side, adjustedQuantity, positionSide, adjustedStopPrice);
+//         logger.info(`Position closed on Binance ${symbol} at price ${closePrice}. Order details: ${JSON.stringify(order)}`);
+
+//         // Veritabanını güncelle
+//         position.isActive = false;
+//         position.closedPrice = closePrice;
+//         position.closedAt = new Date();
+//         await position.save();
+
+//         logger.info(`Position for ${symbol} closed at price ${closePrice}.`);
+//         return order;
+//     } catch (error) {
+//         logger.error(`Error closing position for ${position.symbol}:`, error.message);
+//         logger.error(`Stack trace: ${error.stack}`);
+//         throw error;
+//     }
+// }
+
+async function closePosition(symbol, side) {
     try {
-        const { symbol, totalAllocation, entries } = position;
-        //const side = entries > 0 ? 'SELL' : 'BUY';
-        //const positionSide = entries > 0 ? 'LONG' : 'SHORT';
+        logger.info(`Closing position for ${symbol} with side ${side}.`);
 
-        // BinanceService üzerinden exchangeInfo alınıyor
-        const exchangeInfo = await binanceService.getExchangeInfo();
-
-        // logger.info(`Exchange info: ${JSON.stringify(exchangeInfo)}`);
-
-        // Doğrudan sembol bilgisine erişim
-        const symbolInfo = exchangeInfo[symbol];
-        if (!symbolInfo) {
-            throw new Error(`Symbol ${symbol} not found in exchange info`);
-        }
-
-        const quantityPrecision = symbolInfo.quantityPrecision;
-        const adjustedQuantity = parseFloat(totalAllocation).toFixed(quantityPrecision);
-
-
-        // Pozisyonu kapat
-        const order = await binanceService.closePosition(symbol, side, adjustedQuantity, positionSide, closePrice);
-        logger.info(`Position closed on -------------------Binance----------------- ${symbol} at price ${closePrice}.`);
-        logger.info(`Order details -------------------Binance----------------- ${JSON.stringify(order)}`);
+        // BinanceService'e pozisyonu kapatma talebini gönder
+        const order = await binanceService.closePosition(symbol, side);
         // Veritabanını güncelle
         position.isActive = false;
         position.closedPrice = closePrice;
         position.closedAt = new Date();
         await position.save();
 
-        logger.info(`Position for ${symbol} closed at price ${closePrice}.`);
-        return order;
+        logger.info(`Position closed successfully for ${symbol}. Order details: ${JSON.stringify(order)}`);
     } catch (error) {
-        logger.error(`Error closing position for ${position.symbol}:`, error.message);
+        logger.error(`Error closing position for ${symbol}: ${error.message}`);
         throw error;
     }
 }
