@@ -55,15 +55,21 @@ async function positionManager() {
 
 async function managePosition(position, candles) {
     const closePrices = candles.map(candle => parseFloat(candle.close));
-    const highPrices = candles.map(candle => parseFloat(candle.high)); // En yüksek fiyatlar
-    const lowPrices = candles.map(candle => parseFloat(candle.low));  // En düşük fiyatlar
-    const currentHigh = highPrices[highPrices.length - 1]; // İçinde bulunulan mumun en yüksek fiyatı
-    const currentLow = lowPrices[lowPrices.length - 1];   // İçinde bulunulan mumun en düşük fiyatı
+    const highPrices = candles.map(candle => parseFloat(candle.high));
+    const lowPrices = candles.map(candle => parseFloat(candle.low));
+    const volumes = candles.map(candle => parseFloat(candle.volume));
+
+    const currentHigh = highPrices[highPrices.length - 1];
+    const currentLow = lowPrices[lowPrices.length - 1];
     const currentPrice = closePrices[closePrices.length - 1];
 
     // Bollinger Bands hesapla
     const bollingerBands = calculateBollingerBands(candles);
     const { upper, lower } = bollingerBands;
+
+    // RSI ve ADX hesapla
+    const rsi = calculateRSI(closePrices, 14); // 14 periyotlu RSI
+    const adx = calculateADX(candles, 14); // 14 periyotlu ADX
 
     logger.info(`Checking position for ${position.symbol}:
         - Current Price: ${currentPrice}
@@ -71,24 +77,119 @@ async function managePosition(position, candles) {
         - Current High: ${currentHigh}
         - Current Low: ${currentLow}
         - Entry Price: ${position.entryPrices[0]}
+        - RSI: ${rsi.toFixed(2)}
+        - ADX: ${adx ? adx.toFixed(2) : 'N/A'}
         - Current PnL: ${((currentPrice - position.entryPrices[0]) / position.entryPrices[0] * 100).toFixed(2)}%
     `);
 
-    // Pozisyondan çıkış kontrolü
-    if (position.entries > 0) {
-        // Long pozisyon
-        if (currentHigh >= upper) {
-            logger.info(`Closing LONG position for ${position.symbol}. Condition met (High >= Bollinger Upper).`);
+    if (position.entries > 0) { // Long pozisyon
+        if (currentHigh >= upper || shouldCloseEarly(currentPrice, lower, rsi, adx, 'long')) {
+            logger.info(`Closing LONG position for ${position.symbol}. Condition met.`);
             await closePosition(position.symbol, 'SELL');
         }
-    } else if (position.entries < 0) {
-        // Short pozisyon
-        if (currentLow <= lower) {
-            logger.info(`Closing SHORT position for ${position.symbol}. Condition met (Low <= Bollinger Lower).`);
+    } else if (position.entries < 0) { // Short pozisyon
+        if (currentLow <= lower || shouldCloseEarly(currentPrice, lower, rsi, adx, 'short')) {
+            logger.info(`Closing SHORT position for ${position.symbol}. Condition met.`);
             await closePosition(position.symbol, 'BUY');
         }
     }
 }
+
+// Pozisyonu erken kapatma kararını veren fonksiyon
+function shouldCloseEarly(currentPrice, bollingerBoundary, rsi, adx, positionType) {
+    const proximityThreshold = 0.02; // Bollinger bandına %2 yakınlık
+    const isNearBoundary = Math.abs(currentPrice - bollingerBoundary) / bollingerBoundary <= proximityThreshold;
+
+    if (positionType === 'long') {
+        return isNearBoundary && rsi > 70 && adx && adx < 20; // Aşırı alım ve zayıf trend
+    } else if (positionType === 'short') {
+        return isNearBoundary && rsi < 30 && adx && adx < 20; // Aşırı satış ve zayıf trend
+    }
+    return false;
+}
+
+// RSI hesaplama fonksiyonu
+function calculateRSI(closePrices, period) {
+    const gains = [];
+    const losses = [];
+
+    for (let i = 1; i < closePrices.length; i++) {
+        const change = closePrices[i] - closePrices[i - 1];
+        if (change > 0) gains.push(change);
+        else losses.push(Math.abs(change));
+    }
+
+    const avgGain = gains.slice(-period).reduce((acc, val) => acc + val, 0) / period;
+    const avgLoss = losses.slice(-period).reduce((acc, val) => acc + val, 0) / period;
+
+    const rs = avgGain / avgLoss || 0;
+    return 100 - 100 / (1 + rs);
+}
+
+// ADX hesaplama fonksiyonu
+function calculateADX(candles, period) {
+    if (candles.length < period + 1) {
+        throw new Error('Not enough candles to calculate ADX');
+    }
+
+    const tr = []; // True Range
+    const plusDM = []; // Positive Directional Movement
+    const minusDM = []; // Negative Directional Movement
+
+    for (let i = 1; i < candles.length; i++) {
+        const current = candles[i];
+        const previous = candles[i - 1];
+
+        const highDiff = current.high - previous.high;
+        const lowDiff = previous.low - current.low;
+
+        // True Range
+        const currentTR = Math.max(
+            current.high - current.low,
+            Math.abs(current.high - previous.close),
+            Math.abs(current.low - previous.close)
+        );
+        tr.push(currentTR);
+
+        // Positive and Negative Directional Movement
+        plusDM.push(highDiff > 0 && highDiff > lowDiff ? highDiff : 0);
+        minusDM.push(lowDiff > 0 && lowDiff > highDiff ? lowDiff : 0);
+    }
+
+    // Smoothed TR, +DM, -DM
+    const smoothedTR = smoothArray(tr, period);
+    const smoothedPlusDM = smoothArray(plusDM, period);
+    const smoothedMinusDM = smoothArray(minusDM, period);
+
+    const plusDI = smoothedPlusDM.map((val, i) => (val / smoothedTR[i]) * 100);
+    const minusDI = smoothedMinusDM.map((val, i) => (val / smoothedTR[i]) * 100);
+
+    // Directional Index (DX)
+    const dx = plusDI.map((val, i) => Math.abs(val - minusDI[i]) / (val + minusDI[i]) * 100);
+
+    // Smoothed DX for ADX
+    const adx = smoothArray(dx, period);
+
+    // Son ADX değeri
+    return adx[adx.length - 1];
+}
+
+// Moving average ile smoothing fonksiyonu
+function smoothArray(array, period) {
+    const smoothed = [];
+    let sum = array.slice(0, period).reduce((acc, val) => acc + val, 0);
+
+    smoothed.push(sum / period);
+
+    for (let i = period; i < array.length; i++) {
+        sum = sum - array[i - period] + array[i];
+        smoothed.push(sum / period);
+    }
+
+    return smoothed;
+}
+
+
 
 // async function closePosition(side, positionSide, position, closePrice) {
 //     try {

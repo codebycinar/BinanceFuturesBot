@@ -52,7 +52,7 @@ module.exports = {
   riskPerTrade: 0.01, // Risk per trade (%1 of account)
 
   calculate_position_size: false,
-  static_position_size: 20, //usdt 
+  static_position_size: 10, //usdt 
   // Stop-loss ve Take-profit seviyeleri (yüzde cinsinden)
   stopLossPercent: 1, // %1 stop-loss
   takeProfitPercents: [3, 5, 7.5],
