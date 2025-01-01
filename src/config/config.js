@@ -52,7 +52,7 @@ module.exports = {
   riskPerTrade: 0.01, // Risk per trade (%1 of account)
 
   calculate_position_size: false,
-  static_position_size: 10, //usdt 
+  static_position_size: 6, //usdt 
   // Stop-loss ve Take-profit seviyeleri (yüzde cinsinden)
   stopLossPercent: 1, // %1 stop-loss
   takeProfitPercents: [3, 5, 7.5],
@@ -67,7 +67,7 @@ module.exports = {
   marketScanInterval: 120000, // 2 dakika
   minPriceMovement: 0.0001, // Minimum fiyat hareketi
   limitOrderTolerance: 0.005, // %0.5 mesafe toleransı
-
+  maxOpenPositions: 20, // Açık pozisyon limiti
   topSymbols: [
     'VANAUSDT', 'MEUSDT', 'PENGUUSDT', 'THEUSDT', 'MORPHOUSDT',
     'VANRYUSDT', 'MOVEUSDT', 'NEIROUSDT', 'AVAXUSDT', 'BLURUSDT',

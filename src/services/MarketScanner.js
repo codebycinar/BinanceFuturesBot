@@ -86,6 +86,9 @@ class MarketScanner {
     /**
      * Belirli bir sembolü tarar ve pozisyon açma işlemlerini gerçekleştirir.
      */
+    /**
+  * Belirli bir sembolü tarar ve pozisyon açma işlemlerini gerçekleştirir.
+  */
     async scanSymbol(symbol) {
         try {
             logger.info(`\n=== Scanning ${symbol} ===`, { timestamp: new Date().toISOString() });
@@ -103,8 +106,6 @@ class MarketScanner {
                 return;
             }
 
-            //logger.info(`Candles for ${symbol}: ${JSON.stringify(candles)}`);
-
             // Açık pozisyon kontrolü
             let position = await Position.findOne({ where: { symbol, isActive: true } });
             if (position) {
@@ -113,9 +114,17 @@ class MarketScanner {
                 return;
             }
 
+            // Açık pozisyon sayısını kontrol et
+            const activePositionsCount = await Position.count({ where: { isActive: true } });
+            const maxOpenPositions = config.maxOpenPositions || 20; // Varsayılan değer: 20
+
+            if (activePositionsCount >= maxOpenPositions) {
+                logger.warn(`Maximum open positions limit (${maxOpenPositions}) reached. Skipping new position for ${symbol}.`);
+                return;
+            }
+
             // Yeni sinyal üretme
             const { signal, stopLoss, takeProfit, allocation: generatedAllocation } = await this.strategy.generateSignal(candles, symbol);
-            // Allocation'ı config.static_position_size olarak ayarlayın
             const allocation = config.calculate_position_size
                 ? generatedAllocation
                 : config.static_position_size;
@@ -135,6 +144,7 @@ class MarketScanner {
             logger.error(error.stack);
         }
     }
+
 
     async managePosition(position, candles) {
         const now = new Date();
