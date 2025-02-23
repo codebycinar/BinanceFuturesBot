@@ -40,9 +40,9 @@ class OrderService {
   }
 
 
-  calculateOrderQuantity(allocation, price) {
+  async calculateOrderQuantity(allocation, price) {
     // Bakiyeyi config'den alın veya dinamik olarak hesaplayın
-    const balance = config.calculate_position_size ? 100 : config.static_position_size; // Sabit veya dinamik mod
+    const balance = config.calculate_position_size ? await this.binanceService.getFuturesBalance() : config.static_position_size; // Sabit veya dinamik mod
 
     // Pozisyon büyüklüğü hesaplama
     const quantity = (balance * allocation) / price;

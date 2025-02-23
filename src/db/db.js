@@ -6,6 +6,9 @@ const sequelize = new Sequelize({
     dialect: 'sqlite',
     storage: path.join(__dirname, 'binance_futures_bot.sqlite'),
     logging: false,
+    define: {
+        freezeTableName: true, // Tablo adlarını çoğul yapma
+    },
 });
 
 const models = {};
@@ -16,12 +19,9 @@ fs.readdirSync(modelsDir)
     .filter((file) => file.endsWith('.js'))
     .forEach((file) => {
         const modelDefiner = require(path.join(modelsDir, file));
-        if (typeof modelDefiner === 'function') {
-            const model = modelDefiner(sequelize, Sequelize.DataTypes);
-            models[model.name] = model;
-        } else {
-            console.error(`Invalid model file: ${file}`);
-        }
+        const model = modelDefiner(sequelize, Sequelize.DataTypes);
+        models[model.name] = model;
+        console.log(`Yüklenen model: ${model.name}`); // Eklenen log
     });
 
 // Model ilişkilerini kontrol et

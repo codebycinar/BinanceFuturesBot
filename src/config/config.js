@@ -21,45 +21,20 @@ module.exports = {
     limit: 100,
     keyValue: 2,               // ATR çarpanı
     riskReward: 3,             // Risk/Kar oranı
-    leverage: 10,              // Kaldıraç oranı
-  },
-  scalpstrategy: {
-    rsiPeriod: 14,
-    shortMAPeriod: 9,
-    longMAPeriod: 21,
-    bollingerPeriod: 20,
-    bollingerStdDev: 2,
-    macdShort: 12,
-    macdLong: 26,
-    macdSignal: 9,
-    stochasticPeriod: 14,
-    stochasticSmoothK: 3,
-    stochasticSmoothD: 3,
-    lrPeriod: 100,
-    lrScalingType: 'Standard Deviation', // 'Standard Deviation' veya 'ATR'
-    lrScalingCoefficient1: 1,
-    lrScalingCoefficient2: 2,
-    emaShortPeriod: 9,
-    emaLongPeriod: 21,
-    cciPeriod: 20,
-    adxPeriod: 14,
-    sarStep: 0.02,
-    sarMax: 0.2,
-    atrPeriod: 14,
-    riskRewardRatio: 1, // Risk/Kar Oranı
+    leverage: 5,              // Kaldıraç oranı
   },
   // Risk ve ödül oranları
   riskPerTrade: 0.01, // Risk per trade (%1 of account)
 
   calculate_position_size: false,
-  static_position_size: 10, //usdt 
+  static_position_size: 100, //usdt 
   // Stop-loss ve Take-profit seviyeleri (yüzde cinsinden)
   stopLossPercent: 1, // %1 stop-loss
   takeProfitPercents: [3, 5, 7.5],
 
   // Trailing stop ayarları
   trailingStop: {
-    use: false,
+    use: true,
     callbackRate: 0.5, // %0.5 geri çekilmede stop
   },
 
@@ -67,7 +42,7 @@ module.exports = {
   marketScanInterval: 120000, // 2 dakika
   minPriceMovement: 0.0001, // Minimum fiyat hareketi
   limitOrderTolerance: 0.005, // %0.5 mesafe toleransı
-
+  maxOpenPositions: 5, // Açık pozisyon limiti
   topSymbols: [
     'VANAUSDT', 'MEUSDT', 'PENGUUSDT', 'THEUSDT', 'MORPHOUSDT',
     'VANRYUSDT', 'MOVEUSDT', 'NEIROUSDT', 'AVAXUSDT', 'BLURUSDT',

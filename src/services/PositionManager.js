@@ -54,22 +54,21 @@ async function positionManager() {
 }
 
 async function managePosition(position, candles) {
-    const closePrices = candles.map(candle => parseFloat(candle.close));
-    const highPrices = candles.map(candle => parseFloat(candle.high));
-    const lowPrices = candles.map(candle => parseFloat(candle.low));
-    const volumes = candles.map(candle => parseFloat(candle.volume));
+    const now = new Date();
 
-    const currentHigh = highPrices[highPrices.length - 1];
-    const currentLow = lowPrices[lowPrices.length - 1];
-    const currentPrice = closePrices[closePrices.length - 1];
+    if (position.nextCandleCloseTime && now < position.nextCandleCloseTime) {
+        logger.info(`Waiting for the next candle close for ${position.symbol}. Next close time: ${position.nextCandleCloseTime}`);
+        return; // Zaman dolmadı, bekle
+    }
 
-    // Bollinger Bands hesapla
-    const bollingerBands = calculateBollingerBands(candles);
+    if (!candles || candles.length === 0) {
+        logger.error(`Candles data is missing or empty for ${position.symbol}`);
+        return;
+    }
+
+    const currentPrice = parseFloat(candles[candles.length - 1].close);
+    const bollingerBands = this.calculateBollingerBands(candles);
     const { upper, lower } = bollingerBands;
-
-    // RSI ve ADX hesapla
-    const rsi = calculateRSI(closePrices, 14); // 14 periyotlu RSI
-    const adx = calculateADX(candles, 14); // 14 periyotlu ADX
 
     logger.info(`Checking position for ${position.symbol}:
         - Current Price: ${currentPrice}
@@ -82,23 +81,63 @@ async function managePosition(position, candles) {
         - Current PnL: ${((currentPrice - position.entryPrices[0]) / position.entryPrices[0] * 100).toFixed(2)}%
     `);
 
-    if (position.entries > 0) { // Long pozisyon
-        if (currentHigh >= upper || shouldCloseEarly(currentPrice, lower, rsi, adx, 'long')) {
-            logger.info(`Closing LONG position for ${position.symbol}. Condition met.`);
-            await closePosition(position.symbol, 'SELL');
-        }
-    } else if (position.entries < 0) { // Short pozisyon
-        if (currentLow <= lower || shouldCloseEarly(currentPrice, lower, rsi, adx, 'short')) {
-            logger.info(`Closing SHORT position for ${position.symbol}. Condition met.`);
-            await closePosition(position.symbol, 'BUY');
-        }
+    // Pozisyon kapatma kontrolü
+    if (position.entries > 0 && currentPrice > upper) {
+        logger.info(`Closing LONG position for ${position.symbol}. Price above upper Bollinger band.`);
+        await this.closePosition(position, currentPrice);
+        return;
+    } else if (position.entries < 0 && currentPrice < lower) {
+        logger.info(`Closing SHORT position for ${position.symbol}. Price below lower Bollinger band.`);
+        await this.closePosition(position, currentPrice);
+        return;
     }
+
+    // Bir sonraki adıma geçiş
+    const step = position.step;
+    const allocation = config.strategy.parameters.allocation
+        ? config.strategy.parameters.allocation[step - 1]
+        : config.static_position_size;
+
+    if (!allocation) {
+        logger.warn(`Allocation value is undefined for step ${step} in strategy parameters.`);
+        return;
+    }
+
+    const quantity = await this.orderService.calculateStaticPositionSize(position.symbol, allocation);
+    if (quantity === 0) {
+        logger.warn(`Static position size could not be calculated for ${position.symbol}. Skipping step ${step}.`);
+        return;
+    }
+
+    await this.orderService.placeMarketOrder({
+        symbol: position.symbol,
+        side: position.entries > 0 ? 'BUY' : 'SELL',
+        quantity,
+        positionSide: position.entries > 0 ? 'LONG' : 'SHORT',
+    });
+
+    logger.info(`Step ${step} executed for ${position.symbol} with quantity ${quantity}.`);
+
+    position.step += 1;
+    position.nextCandleCloseTime = this.getNextCandleCloseTime('1h');
+    await position.save();
+}
+
+function getNextCandleCloseTime(timeframe) {
+    const now = new Date();
+    const timeframes = {
+        '1m': 60 * 1000,
+        '5m': 5 * 60 * 1000,
+        '1h': 60 * 60 * 1000,
+    };
+    const ms = timeframes[timeframe] || 60 * 60 * 1000;
+    return new Date(Math.ceil(now.getTime() / ms) * ms);
 }
 
 // Pozisyonu erken kapatma kararını veren fonksiyon
 function shouldCloseEarly(currentPrice, bollingerBoundary, rsi, adx, positionType) {
     const proximityThreshold = 0.02; // Bollinger bandına %2 yakınlık
-    const isNearBoundary = Math.abs(currentPrice - bollingerBoundary) / bollingerBoundary <= proximityThreshold;
+    const isNearBoundary = Math.abs(currentPrice - bollingerBoundary) / bollingerBoundary <= 0.02; // %2 yakınlık kontrolü
 
     if (positionType === 'long') {
         return isNearBoundary && rsi > 70 && adx && adx < 20; // Aşırı alım ve zayıf trend
@@ -243,12 +282,13 @@ function smoothArray(array, period) {
 //     }
 // }
 
-async function closePosition(symbol, side) {
+async function closePosition(symbol, side, position, closePrice) {
     try {
         logger.info(`Closing position for ${symbol} with side ${side}.`);
 
         // BinanceService'e pozisyonu kapatma talebini gönder
         const order = await binanceService.closePosition(symbol, side);
+
         // Veritabanını güncelle
         position.isActive = false;
         position.closedPrice = closePrice;
@@ -262,9 +302,12 @@ async function closePosition(symbol, side) {
     }
 }
 
-
 async function updateOpenPositions() {
     try {
+        if (!binanceService) {
+            throw new Error('Binance service is not defined');
+        }
+
         // Binance üzerinde açık pozisyonları al
         const openPositions = await binanceService.getOpenPositions();
 

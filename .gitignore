@@ -4,3 +4,21 @@ node_modules
 BinanceFuturesBot.zip
 
 src/db/binance_futures_bot.sqlite
+
+txt/BinanceService.txt
+
+txt/BollingerStrategy.txt
+
+txt/config.txt
+
+txt/index.txt
+
+txt/log.txt
+
+txt/MarketScanner.txt
+
+txt/OrderService.txt
+
+txt/PositionManager.txt
+
+txt/PositionModel.txt
