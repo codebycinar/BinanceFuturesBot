@@ -9,8 +9,15 @@ module.exports = (sequelize, DataTypes) => {
             defaultValue: 0,
         },
         entryPrices: {
-            type: DataTypes.JSON,
-            defaultValue: [],
+            type: DataTypes.TEXT,
+            defaultValue: JSON.stringify([]),
+            get() {
+                const value = this.getDataValue('entryPrices');
+                return value ? JSON.parse(value) : [];
+            },
+            set(value) {
+                this.setDataValue('entryPrices', JSON.stringify(value));
+            },
         },
         totalAllocation: {
             type: DataTypes.FLOAT,
@@ -26,6 +33,14 @@ module.exports = (sequelize, DataTypes) => {
         },
         nextCandleCloseTime: {
             type: DataTypes.DATE,
+            allowNull: true,
+        },
+        stopLoss: {
+            type: DataTypes.FLOAT,
+            allowNull: true,
+        },
+        takeProfit: {
+            type: DataTypes.FLOAT,
             allowNull: true,
         },
     });

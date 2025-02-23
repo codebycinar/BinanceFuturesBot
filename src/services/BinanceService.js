@@ -49,7 +49,7 @@ class BinanceService {
   /**
    * 1m mumlarını alma
    */
-  async getCandles(symbol, interval = '1m', limit = 100) {
+  async getCandles(symbol, interval = '1h', limit = 100) {
     try {
       const candles = await this.client.futuresCandles({ symbol, interval, limit });
       return candles.map(c => ({
@@ -59,7 +59,8 @@ class BinanceService {
         close: c.close,
         volume: c.volume,
         timestamp: c.closeTime,
-      }));
+      }))
+        .filter(c => !isNaN(c.close));
     } catch (error) {
       logger.error(`Error fetching candles for ${symbol}:`, error);
       return [];
@@ -173,60 +174,41 @@ class BinanceService {
   /**
    * Stop-Loss emri (Stop-Market) oluşturur. LONG pozisyon -> SELL, SHORT pozisyon -> BUY.
    */
-  async placeStopLossOrder(symbol, side, quantity, stopPrice, positionSide) {
+  async placeStopLossOrder({ symbol, side, quantity, stopPrice, positionSide }) {
     try {
-      const pricePrecision = await this.getPricePrecision(symbol);
-      const quantityPrecision = await this.getQuantityPrecision(symbol);
-
-      const adjustedStopPrice = this.adjustPrecision(stopPrice, pricePrecision);
-      const adjustedQuantity = this.adjustPrecision(quantity, quantityPrecision);
-
       const orderData = {
         symbol,
         side,
         type: 'STOP_MARKET',
-        stopPrice: adjustedStopPrice.toString(),
-        quantity: adjustedQuantity.toString(),
-        positionSide: positionSide
+        stopPrice: stopPrice.toString(),
+        quantity: quantity.toString(),
+        positionSide,
+        reduceOnly: true, // Pozisyonu kapatmak için
       };
-
-      logger.info(`Placing STOP_MARKET order (Stop-Loss) for ${symbol}:`, orderData);
-      return await this.client.futuresOrder(orderData);
+      console.log(`Stop Loss emri yerleştiriliyor: ${symbol}`, orderData);
+      return await this.binanceService.client.futuresOrder(orderData);
     } catch (error) {
-      logger.error(`Error placing stop loss for ${symbol}:`, error);
+      console.error(`Stop Loss emri hatası (${symbol}):`, error);
       throw error;
     }
   }
 
-  /**
-   * Take-Profit emri (Take-Profit-Market) oluşturur. LONG pozisyon -> SELL, SHORT pozisyon -> BUY.
-   */
-  async placeTakeProfitOrder(symbol, side, quantity, takeProfitPrice, positionSide) {
+  // Take Profit Emiri
+  async placeTakeProfitOrder({ symbol, side, quantity, stopPrice, positionSide }) {
     try {
-      const pricePrecision = await this.getPricePrecision(symbol);
-      const quantityPrecision = await this.getQuantityPrecision(symbol);
-
-      const adjustedTPPrice = this.adjustPrecision(takeProfitPrice, pricePrecision);
-      const adjustedQuantity = this.adjustPrecision(quantity, quantityPrecision);
-
       const orderData = {
         symbol,
         side,
         type: 'TAKE_PROFIT_MARKET',
-        stopPrice: adjustedTPPrice.toString(),
-        quantity: adjustedQuantity.toString(),
-        positionSide: positionSide
+        stopPrice: stopPrice.toString(),
+        quantity: quantity.toString(),
+        positionSide,
+        reduceOnly: true, // Pozisyonu kapatmak için
       };
-
-      // Hedge modundaysak positionSide ve reduceOnly ayarı
-      if (this.positionSideMode === 'Hedge') {
-        orderData.positionSide = positionSide;
-      }
-
-      logger.info(`Placing TAKE_PROFIT_MARKET order for ${symbol}:`, orderData);
-      return await this.client.futuresOrder(orderData);
+      console.log(`Take Profit emri yerleştiriliyor: ${symbol}`, orderData);
+      return await this.binanceService.client.futuresOrder(orderData);
     } catch (error) {
-      logger.error(`Error placing take profit for ${symbol}:`, error);
+      console.error(`Take Profit emri hatası (${symbol}):`, error);
       throw error;
     }
   }
@@ -259,21 +241,19 @@ class BinanceService {
     }
   }
 
-
-
   /**
    * Market emriyle pozisyonu kapatır (örnek: LONG -> SELL).
    */
   /**
  * Market emriyle pozisyonu kapatır (örnek: LONG -> SELL).
  */
-async closePosition(symbol, side) {
-  try {
+  async closePosition(symbol, side) {
+    try {
       // Exchange bilgilerini kontrol et
       const exchangeInfo = await this.getExchangeInfo();
       const symbolInfo = exchangeInfo[symbol];
       if (!symbolInfo) {
-          throw new Error(`Symbol ${symbol} not found in exchange info`);
+        throw new Error(`Symbol ${symbol} not found in exchange info`);
       }
 
       // Açık pozisyon bilgilerini al
@@ -281,12 +261,12 @@ async closePosition(symbol, side) {
       const position = openPositions.find(pos => pos.symbol === symbol);
 
       if (!position) {
-          throw new Error(`No open position found for ${symbol}`);
+        throw new Error(`No open position found for ${symbol}`);
       }
 
       const positionSize = Math.abs(parseFloat(position.positionAmt));
       if (positionSize === 0) {
-          throw new Error(`Position size for ${symbol} is zero.`);
+        throw new Error(`Position size for ${symbol} is zero.`);
       }
 
       // Pozisyon boyutunu hassasiyete göre ayarla
@@ -305,11 +285,11 @@ async closePosition(symbol, side) {
 
       // Satış işlemini gerçekleştir
       const order = await this.client.futuresOrder({
-          symbol,
-          side,
-          type: 'MARKET',
-          quantity: adjustedQuantity,
-          positionSide: position.positionSide, // LONG veya SHORT
+        symbol,
+        side,
+        type: 'MARKET',
+        quantity: adjustedQuantity,
+        positionSide: position.positionSide, // LONG veya SHORT
       });
 
       // Başarılı işlem detaylarını logla ve Telegram'a gönder
@@ -327,7 +307,7 @@ async closePosition(symbol, side) {
       logger.info(successMessage);
 
       return order;
-  } catch (error) {
+    } catch (error) {
       const errorMessage = `
           ❌ Error Closing Position:
           - Symbol: ${symbol}
@@ -337,8 +317,8 @@ async closePosition(symbol, side) {
       this.bot.sendMessage(config.telegramChatId, errorMessage);
       logger.error(errorMessage);
       throw error;
+    }
   }
-}
 
 
   getPrecision(symbol) {
