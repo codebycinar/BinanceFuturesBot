@@ -5,6 +5,7 @@ const sound = require('sound-play'); // sound-play modülünü içe aktarın
 const path = require('path'); // Ses dosyasının yolunu belirtmek için
 const config = require('../config/config');
 const { formatQuantity } = require('../utils/helpers');
+const TelegramService = require('./TelegramService');
 
 class OrderService {
   constructor(binanceService) {
@@ -13,6 +14,9 @@ class OrderService {
 
   async placeMarketOrder({ symbol, side, quantity, positionSide }) {
     try {
+
+      await this.binanceService.setLeverage(symbol);
+
       const quantityPrecision = this.binanceService.getQuantityPrecision(symbol);
       const stepSize = parseFloat(this.binanceService.exchangeInfo[symbol].filters.LOT_SIZE.stepSize);
 
@@ -35,10 +39,56 @@ class OrderService {
       return await this.binanceService.client.futuresOrder(orderData);
     } catch (error) {
       logger.error(`Error in Binance API MARKET order for ${symbol}:`, error.message);
+      await TelegramService.sendError(error.message, symbol);
       throw error;
     }
   }
 
+  async calculateTurtlePositionSize(symbol, atr) {
+    try {
+      const balance = await this.binanceService.getFuturesBalance();
+      const riskAmount = balance * config.riskPerTrade; // %1 risk
+      const currentPrice = await this.binanceService.getCurrentPrice(symbol);
+      const contractSize = 1;
+      // Turtle pozisyon büyüklüğü: riskAmount / (ATR * birim fiyat)
+      const quantity = riskAmount / (atr * contractSize);
+      const stepSize = await this.binanceService.getStepSize(symbol);
+      const adjustedQuantity = this.binanceService.adjustPrecision(quantity, stepSize);
+
+      const notional = adjustedQuantity * currentPrice;
+      if (notional < 5) {
+        logger.warn(`Notional value (${notional}) for ${symbol} below minimum (5 USDT).`);
+        return 0;
+      }
+
+      logger.info(`Turtle position size for ${symbol}: ${adjustedQuantity}, ATR: ${atr}`);
+      return adjustedQuantity;
+    } catch (error) {
+      logger.error(`Error calculating Turtle position size: ${error.message}`);
+      return 0;
+    }
+  }
+
+  async addPosition(position, currentPrice) {
+    if (position.units >= 4) return;
+
+    const atr = await binanceService.calculateATR(position.symbol, 20);
+    const addThreshold = position.side === 'LONG'
+      ? position.entryPrice + 0.5 * atr
+      : position.entryPrice - 0.5 * atr;
+
+    if (currentPrice >= addThreshold) {
+      const newUnits = calculatePositionSize(atr);
+      await orderService.placeMarketOrder({
+        symbol: position.symbol,
+        side: position.side,
+        quantity: newUnits
+      });
+
+      position.units += newUnits;
+      await position.save();
+    }
+  }
 
   async calculateOrderQuantity(allocation, price) {
     // Bakiyeyi config'den alın veya dinamik olarak hesaplayın
@@ -58,116 +108,6 @@ class OrderService {
     logger.info(`Calculated order quantity: ${quantity} for allocation: ${allocation}, price: ${price}, balance: ${balance}`);
     return quantity;
   }
-  /**
-   * Pozisyon açma işlemi
-   */
-  async openPositionWithMultipleTPAndTrailing(symbol, side, currentPrice, levels = {}, useTrailingStop, callbackRate) {
-    try {
-      const positionSide = side === 'BUY' ? 'LONG' : 'SHORT';
-      const quantity = await this.calculatePositionSize(symbol, currentPrice);
-
-      if (!quantity || quantity <= 0) {
-        logger.error(`Calculated quantity is invalid for ${symbol}: ${quantity}`, { timestamp: new Date().toISOString() });
-        return false;
-      }
-
-      logger.info(`Placing market order for ${symbol}: ${side} x${quantity}`, { timestamp: new Date().toISOString() });
-
-      // actualPositionSide'ı tanımlayın
-      const actualPositionSide = this.binanceService.positionSideMode === 'Hedge' ? positionSide : undefined;
-
-      await this.binanceService.placeMarketOrder(symbol, side, quantity, positionSide);
-      logger.info(`Market order placed: ${side} ${symbol} x${quantity}`, { timestamp: new Date().toISOString() });
-
-      // ATR hesaplama ve diğer işlemler...
-
-      // ATR hesaplama
-      const atr = await this.binanceService.calculateATR(symbol, config.strategy.atrPeriod);
-      if (atr === undefined) {
-        logger.warn(`ATR is undefined for ${symbol}. Skipping stop-loss and take-profit placement.`, { timestamp: new Date().toISOString() });
-        return false;
-      }
-
-      // Risk Reward Ratio kullanımı
-      const riskAmount = config.strategy.keyValue * atr; // 'keyValue' * ATR
-      const stopLoss = side === 'BUY' ? currentPrice - riskAmount : currentPrice + riskAmount;
-      const takeProfit = side === 'BUY'
-        ? currentPrice + (riskAmount * config.strategy.riskReward)
-        : currentPrice - (riskAmount * config.strategy.riskReward);
-
-      logger.info(`Placing Stop-Loss order for ${symbol}: ${stopLoss}`, { timestamp: new Date().toISOString() });
-      // Stop-Loss Emirini Yerleştirme
-      await this.binanceService.placeStopLossOrder(symbol, side === 'BUY' ? 'SELL' : 'BUY', quantity, stopLoss, positionSide);
-      logger.info(`Stop-Loss order placed at ${stopLoss}`, { timestamp: new Date().toISOString() });
-
-      logger.info(`Placing Take-Profit order for ${symbol}: ${takeProfit}`, { timestamp: new Date().toISOString() });
-
-      if (typeof takeProfit !== 'number' || isNaN(takeProfit)) {
-        logger.error(`Take-Profit value is invalid: ${takeProfit}`, { timestamp: new Date().toISOString() });
-        return;
-      }
-
-      // Take-Profit Emirini Yerleştirme
-      await this.binanceService.placeTakeProfitOrder(symbol, side === 'BUY' ? 'SELL' : 'BUY', quantity, takeProfit, positionSide);
-      logger.info(`Take-Profit order placed at ${takeProfit}`, { timestamp: new Date().toISOString() });
-
-      // Trailing Stop ekleme
-      if (useTrailingStop) {
-        logger.info(`Placing Trailing Stop order for ${symbol} with callback rate ${callbackRate}%`, { timestamp: new Date().toISOString() });
-        await this.binanceService.placeTrailingStopOrder(symbol, side === 'BUY' ? 'SELL' : 'BUY', quantity, callbackRate, positionSide);
-        logger.info(`Trailing Stop order placed with callback rate ${callbackRate}%`, { timestamp: new Date().toISOString() });
-      }
-
-      const soundPath = path.join(__dirname, '../sounds/alert.wav');
-      sound.play(soundPath)
-        .then(() => {
-          logger.info('Sound played successfully.');
-        })
-        .catch(err => {
-          logger.error('Error playing sound:', err);
-        });
-
-      return true;
-    } catch (error) {
-      logger.error(`Error opening position for ${symbol}:`, {
-        message: error.message,
-        stack: error.stack,
-        code: error.code,
-        info: error.info,
-      }, { timestamp: new Date().toISOString() });
-      return false;
-    }
-  }
-
-  async openPositionWithMultipleTP(symbol, signal, entryPrice, { stopLoss, takeProfit }) {
-    try {
-      const quantity = this.calculateOrderQuantity(entryPrice);
-      const orderData = {
-        symbol,
-        side: signal,
-        type: 'MARKET',
-        quantity,
-        stopLoss,
-        takeProfit,
-      };
-
-      await this.binanceService.placeMarketOrder(orderData);
-      logger.info(`Order placed for ${symbol} with stopLoss: ${stopLoss} and takeProfit: ${takeProfit}`);
-      const soundPath = path.join(__dirname, '../sounds/alert.wav');
-      sound.play(soundPath)
-        .then(() => {
-          logger.info('Sound played successfully.');
-        })
-        .catch(err => {
-          logger.error('Error playing sound:', err);
-        });
-
-      return true;
-    } catch (error) {
-      logger.error(`Error placing order for ${symbol}: ${error.message}`);
-    }
-  }
-
 
   /**
    * Pozisyon boyutunu hesaplama
@@ -191,7 +131,13 @@ class OrderService {
         return 0; // Minimum notional sağlanmıyorsa işlem yapmayın
       }
 
-      logger.info(`Using static position size (${static_position_size} USDT) for ${symbol}. Calculated quantity: ${adjustedQuantity}`);
+      logger.info(`Pozisyon Boyutu Hesaplama (${symbol}):`, {
+        usdtAmount: config.static_position_size,
+        currentPrice: currentPrice,
+        rawQuantity: quantity,
+        stepSize: stepSize,
+        adjustedQuantity: adjustedQuantity
+      });
       return adjustedQuantity;
     }
     try {
@@ -214,51 +160,6 @@ class OrderService {
       logger.error(`Error calculating position size for ${symbol}:`, error);
       return 0;
     }
-  }
-
-  async calculateStaticPositionSize(symbol, allocation) {
-    try {
-      if (!config.calculate_position_size) {
-        allocation = config.static_position_size;
-      }
-
-      const currentPrice = await this.binanceService.getCurrentPrice(symbol);
-
-      if (!currentPrice || allocation <= 0) {
-        logger.warn(`Invalid data for position size calculation: Price=${currentPrice}, Allocation=${allocation}`);
-        return 0;
-      }
-
-      // Kaldıraç ile pozisyon büyüklüğü hesaplama
-      const positionSize = (allocation * config.strategy.leverage) / currentPrice;
-
-      const stepSize = await this.binanceService.getStepSize(symbol);
-      const roundedPositionSize = this.binanceService.roundQuantity(positionSize, stepSize);
-
-      // Minimum notional kontrolü
-      const notional = roundedPositionSize * currentPrice;
-      const minNotional = 5; // Binance minimum işlem büyüklüğü
-      if (notional < minNotional) {
-        logger.warn(`Notional value (${notional}) for ${symbol} is below minimum (${minNotional} USDT).`);
-        return 0;
-      }
-
-      logger.info(`Calculated static position size for ${symbol}: ${roundedPositionSize}, Notional=${notional}`);
-      return roundedPositionSize;
-    } catch (error) {
-      logger.error(`Error calculating static position size for ${symbol}: ${error.message}`);
-      return 0;
-    }
-  }
-
-
-
-
-  async getMinNotional(symbol) {
-    const exchangeInfo = await this.client.futuresExchangeInfo();
-    const symbolInfo = exchangeInfo.symbols.find(s => s.symbol === symbol);
-    const notionalFilter = symbolInfo.filters.find(f => f.filterType === 'MIN_NOTIONAL');
-    return notionalFilter ? parseFloat(notionalFilter.minNotional) : 5; // Varsayılan değer
   }
 
   async closePosition(symbol, side, quantity, positionSide) {

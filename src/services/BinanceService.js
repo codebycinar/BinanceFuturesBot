@@ -6,13 +6,12 @@ const { validateApiCredentials } = require('../utils/validators');
 const logger = require('../utils/logger');
 const ti = require('technicalindicators'); // Teknik göstergeler için kütüphane
 const axios = require('axios');
-const TelegramBot = require('node-telegram-bot-api');
 
 
 class BinanceService {
   constructor() {
     validateApiCredentials(config.apiKey, config.apiSecret);
-
+    this.leverage = config.leverage || 5;
     this.client = Binance({
       apiKey: config.apiKey,
       apiSecret: config.apiSecret,
@@ -23,8 +22,6 @@ class BinanceService {
     });
 
     this.positionSideMode = config.positionSideMode || 'One-Way'; // 'One-Way' veya 'Hedge'
-    // Telegram Bot'u tanımla
-    this.bot = new TelegramBot(config.telegramBotToken, { polling: false });
   }
 
   /**
@@ -47,20 +44,26 @@ class BinanceService {
   }
 
   /**
-   * 1m mumlarını alma
+   * Timeframe mumlarını alma
    */
   async getCandles(symbol, interval = '1h', limit = 100) {
     try {
       const candles = await this.client.futuresCandles({ symbol, interval, limit });
-      return candles.map(c => ({
+
+      const validCandles = candles.map(c => ({
         open: c.open,
         high: c.high,
         low: c.low,
         close: c.close,
         volume: c.volume,
         timestamp: c.closeTime,
-      }))
-        .filter(c => !isNaN(c.close));
+      })).filter(c => !isNaN(c.close));
+
+      if (validCandles.length < limit) {
+        logger.warn(`Insufficient candles fetched for ${symbol}: ${validCandles.length}/${limit}`);
+      }
+
+      return validCandles;
     } catch (error) {
       logger.error(`Error fetching candles for ${symbol}:`, error);
       return [];
@@ -101,6 +104,19 @@ class BinanceService {
       return parseFloat(ticker[symbol]);
     } catch (error) {
       logger.error(`Error fetching current price for ${symbol}:`, error);
+      throw error;
+    }
+  }
+
+  async setLeverage(symbol, leverage = this.leverage) {
+    try {
+      await this.client.futuresLeverage({
+        symbol: symbol,
+        leverage: leverage
+      });
+      logger.info(`${symbol} için kaldıraç ${leverage}x olarak ayarlandı`);
+    } catch (error) {
+      logger.error(`${symbol} kaldıraç ayarlama hatası:`, error);
       throw error;
     }
   }
@@ -170,10 +186,6 @@ class BinanceService {
     }
   }
 
-
-  /**
-   * Stop-Loss emri (Stop-Market) oluşturur. LONG pozisyon -> SELL, SHORT pozisyon -> BUY.
-   */
   async placeStopLossOrder({ symbol, side, quantity, stopPrice, positionSide }) {
     try {
       const orderData = {
@@ -182,18 +194,16 @@ class BinanceService {
         type: 'STOP_MARKET',
         stopPrice: stopPrice.toString(),
         quantity: quantity.toString(),
-        positionSide,
-        reduceOnly: true, // Pozisyonu kapatmak için
+        positionSide
       };
       console.log(`Stop Loss emri yerleştiriliyor: ${symbol}`, orderData);
-      return await this.binanceService.client.futuresOrder(orderData);
+      return await this.client.futuresOrder(orderData); // Düzeltildi: this.binanceService.client -> this.client
     } catch (error) {
       console.error(`Stop Loss emri hatası (${symbol}):`, error);
       throw error;
     }
   }
 
-  // Take Profit Emiri
   async placeTakeProfitOrder({ symbol, side, quantity, stopPrice, positionSide }) {
     try {
       const orderData = {
@@ -202,11 +212,10 @@ class BinanceService {
         type: 'TAKE_PROFIT_MARKET',
         stopPrice: stopPrice.toString(),
         quantity: quantity.toString(),
-        positionSide,
-        reduceOnly: true, // Pozisyonu kapatmak için
+        positionSide
       };
       console.log(`Take Profit emri yerleştiriliyor: ${symbol}`, orderData);
-      return await this.binanceService.client.futuresOrder(orderData);
+      return await this.client.futuresOrder(orderData); // Düzeltildi: this.binanceService.client -> this.client
     } catch (error) {
       console.error(`Take Profit emri hatası (${symbol}):`, error);
       throw error;
@@ -249,119 +258,20 @@ class BinanceService {
  */
   async closePosition(symbol, side) {
     try {
-      // Exchange bilgilerini kontrol et
-      const exchangeInfo = await this.getExchangeInfo();
-      const symbolInfo = exchangeInfo[symbol];
-      if (!symbolInfo) {
-        throw new Error(`Symbol ${symbol} not found in exchange info`);
-      }
+      const positionSide = side === 'BUY' ? 'SHORT' : 'LONG'; // Hedge moduna göre ayarla
+      const quantity = await this.getPositionSize(symbol); // Mevcut pozisyon boyutunu al
 
-      // Açık pozisyon bilgilerini al
-      const openPositions = await this.getOpenPositions();
-      const position = openPositions.find(pos => pos.symbol === symbol);
-
-      if (!position) {
-        throw new Error(`No open position found for ${symbol}`);
-      }
-
-      const positionSize = Math.abs(parseFloat(position.positionAmt));
-      if (positionSize === 0) {
-        throw new Error(`Position size for ${symbol} is zero.`);
-      }
-
-      // Pozisyon boyutunu hassasiyete göre ayarla
-      const quantityPrecision = symbolInfo.quantityPrecision;
-      const adjustedQuantity = positionSize.toFixed(quantityPrecision);
-
-      // Mevcut fiyatı al
-      const currentPrice = await this.getCurrentPrice(symbol);
-
-      // Pozisyonun giriş fiyatını al
-      const entryPrice = parseFloat(position.entryPrice);
-
-      // Kar/Zarar hesaplama
-      const profitLoss = (currentPrice - entryPrice) * positionSize * (side === 'SELL' ? 1 : -1); // Long için ters işlem
-      const profitLossUSDT = profitLoss.toFixed(2); // USDT cinsinden yuvarlama
-
-      // Satış işlemini gerçekleştir
-      const order = await this.client.futuresOrder({
+      return await this.client.futuresOrder({
         symbol,
         side,
         type: 'MARKET',
-        quantity: adjustedQuantity,
-        positionSide: position.positionSide, // LONG veya SHORT
+        quantity,
+        positionSide,
+        reduceOnly: true
       });
-
-      // Başarılı işlem detaylarını logla ve Telegram'a gönder
-      const successMessage = `
-          ✅ Position Closed Successfully:
-          - Symbol: ${symbol}
-          - Side: ${side}
-          - Quantity: ${adjustedQuantity}
-          - Entry Price: ${entryPrice}
-          - Close Price: ${currentPrice}
-          - Profit/Loss: ${profitLossUSDT} USDT
-          - Order ID: ${order.orderId || 'N/A'}
-      `;
-      this.bot.sendMessage(config.telegramChatId, successMessage);
-      logger.info(successMessage);
-
-      return order;
     } catch (error) {
-      const errorMessage = `
-          ❌ Error Closing Position:
-          - Symbol: ${symbol}
-          - Side: ${side}
-          - Error: ${error.message}
-      `;
-      this.bot.sendMessage(config.telegramChatId, errorMessage);
-      logger.error(errorMessage);
+      logger.error(`Pozisyon kapatma hatası (${symbol}):`, error);
       throw error;
-    }
-  }
-
-
-  getPrecision(symbol) {
-    if (!this.exchangeInfo || !this.exchangeInfo.symbols) {
-      throw new Error('Exchange info is not loaded');
-    }
-
-    const symbolInfo = this.exchangeInfo.symbols.find(s => s.symbol === symbol);
-    if (!symbolInfo) {
-      throw new Error(`Symbol ${symbol} not found in exchange info`);
-    }
-
-    const lotSizeFilter = symbolInfo.filters.find(f => f.filterType === 'LOT_SIZE');
-    if (!lotSizeFilter) {
-      throw new Error(`LOT_SIZE filter not found for ${symbol}`);
-    }
-
-    return parseFloat(lotSizeFilter.stepSize);
-  }
-
-
-  roundQuantity(quantity, stepSize) {
-    const precision = Math.floor(Math.log10(1 / stepSize));
-    return parseFloat(quantity.toFixed(precision));
-  }
-
-  async cancelOpenOrders(symbol) {
-    try {
-      // O sembol için açık olan tüm emirleri al
-      const openOrders = await this.binanceService.getOpenOrders(symbol);
-
-      // Tüm açık emirleri iptal et
-      for (const order of openOrders) {
-        if (order.reduceOnly) { // Sadece reduce-only emirleri iptal et
-          await this.binanceService.client.futuresCancelOrder({
-            symbol: symbol,
-            orderId: order.orderId,
-          });
-          logger.info(`Cancelled order for ${symbol} with ID ${order.orderId}`);
-        }
-      }
-    } catch (error) {
-      logger.error(`Error cancelling open orders for ${symbol}:`, error);
     }
   }
 
@@ -370,14 +280,13 @@ class BinanceService {
    */
   async calculateATR(symbol, period) {
     try {
-
       // Strateji parametrelerinden timeframe değerini al
-      const timeframe = this.parameters && this.parameters.timeframe ? this.parameters.timeframe : '1h';
+      const timeframe = this.parameters && this.parameters.donchiantimeframe ? this.parameters.donchiantimeframe : '1d';
 
 
       const candles = await this.getCandles(symbol, timeframe, period + 1);
-      if (candles.length < period + 1) {
-        logger.warn(`Not enough candles to calculate ATR for ${symbol}`);
+      if (!candles || candles.length < period + 1) {
+        logger.warn(`No candles returned for ${symbol} in ATR calculation`);
         return undefined;
       }
 
@@ -395,39 +304,45 @@ class BinanceService {
       const atr = atrArray.length > 0 ? atrArray[atrArray.length - 1] : undefined;
       logger.info(`Calculated ATR for ${symbol}: ${atr}`, { timestamp: new Date().toISOString() });
       return atr;
+
     } catch (error) {
       logger.error(`Error calculating ATR for ${symbol}: ${error.message}`, { timestamp: new Date().toISOString() });
       return undefined;
     }
   }
 
-  /**
-   * ADX hesaplama fonksiyonu
-   */
-  async calculateADX(symbol, period) {
+  async calculateDonchianChannels(symbol, period, timeframe = '1d') {
     try {
-      const candles = await this.getCandles(symbol, '1m', period + 1);
-      if (candles.length < period + 1) {
-        logger.warn(`Not enough candles to calculate ADX for ${symbol}`);
-        return undefined;
+      const candles = await this.getCandles(symbol, timeframe, period + 1);
+      if (!candles || candles.length === 0) {
+        logger.warn(`No candles returned for ${symbol} in Donchian calculation`);
+        return { upper: null, lower: null };
       }
 
-      const highs = candles.map(c => parseFloat(c.high));
-      const lows = candles.map(c => parseFloat(c.low));
-      const closes = candles.map(c => parseFloat(c.close));
+      if (candles.length < period) {
+        logger.warn(`Not enough candles for Donchian Channels for ${symbol}: ${candles.length}/${period}`);
+        return { upper: null, lower: null };
+      }
+      const highs = candles.slice(-period).map(c => parseFloat(c.high));
+      const lows = candles.slice(-period).map(c => parseFloat(c.low));
 
-      const adxArray = ti.ADX.calculate({
-        high: highs,
-        low: lows,
-        close: closes,
+      if (highs.length === 0 || lows.length === 0) {
+        logger.warn(`No valid high/low values for Donchian Channels for ${symbol}`);
+        return { upper: null, lower: null };
+      }
+      const upper = Math.max(...highs);
+      const lower = Math.min(...lows);
+
+      logger.info(`Donchian Kanalları (${symbol}):`, {
+        upper: upper.toFixed(4),
+        lower: lower.toFixed(4),
         period: period,
+        candlesUsed: candles.length
       });
-
-      const adx = adxArray.length > 0 ? adxArray[adxArray.length - 1].adx : undefined;
-      return adx;
+      return { upper, lower };
     } catch (error) {
-      logger.error(`Error calculating ADX for ${symbol}:`, error.message);
-      return undefined;
+      logger.error(`Error calculating Donchian Channels for ${symbol}:`, error);
+      return { upper: null, lower: null };
     }
   }
 

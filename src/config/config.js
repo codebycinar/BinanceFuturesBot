@@ -17,16 +17,20 @@ module.exports = {
     stochasticSignalPeriod: 3, // Stochastic sinyal periyodu
     atrLookback: 21, // ATR yön kontrolü için bakılacak mum sayısı
     allocation: [0.2, 0.3, 0.5], // İlk, ikinci ve üçüncü alımlar için bütçe oranları
-    timeframe: '1h',
-    limit: 100,
+    timeframe: '4h',
+    limit: 20,
     keyValue: 2,               // ATR çarpanı
     riskReward: 3,             // Risk/Kar oranı
     leverage: 5,              // Kaldıraç oranı
+    entryPeriod: 20,
+    exitPeriod: 10,
+    maxAdditions: 4,
+    enableTrading: true, // Gerçek alım satım yapmak için true yapın
   },
   // Risk ve ödül oranları
   riskPerTrade: 0.01, // Risk per trade (%1 of account)
-
-  calculate_position_size: false,
+  leverage: 5, // Kaldıraç oranı
+  calculate_position_size: true,
   static_position_size: 100, //usdt 
   // Stop-loss ve Take-profit seviyeleri (yüzde cinsinden)
   stopLossPercent: 1, // %1 stop-loss

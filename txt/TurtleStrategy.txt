@@ -1,0 +1,85 @@
+const logger = require('../utils/logger');
+const config = require('../config/config');
+
+class TurtleStrategy {
+  constructor(strategyName) {
+    this.strategyName = strategyName;
+    this.parameters = config.strategy || {
+      entryPeriod: 20, // 20 günlük Donchian
+      exitPeriod: 10,  // 10 günlük Donchian
+      atrPeriod: 14,   // ATR periyodu
+      riskPercentage: 0.01 // %1 risk
+    };
+  }
+
+  async initialize() {
+    if (!this.parameters.entryPeriod || !this.parameters.atrPeriod) {
+      throw new Error('TurtleStrategy için config parametreleri eksik!');
+    }
+    logger.info(`TurtleStrategy başlatıldı: ${this.strategyName}`);
+  }
+
+  async generateSignal(candles, symbol, binanceService) {
+
+    const entryPeriod = this.parameters.entryPeriod; // 20 gün
+    const exitPeriod = this.parameters.exitPeriod;   // 10 gün (çıkış için)
+    const atrPeriod = this.parameters.atrPeriod;
+
+    const lastCandle = candles[candles.length - 1];
+    const currentPrice = parseFloat(candles[candles.length - 1].close);
+
+
+    // Donchian Kanalları hesapla
+    const entryChannels = await binanceService.calculateDonchianChannels(symbol, entryPeriod, config.strategy.timeframe);
+    const exitChannels = await binanceService.calculateDonchianChannels(symbol, this.parameters.exitPeriod, config.strategy.timeframe);
+    //const longTermChannels = await binanceService.calculateDonchianChannels(symbol, 55, '1h'); // 55 günlük
+
+    if (!entryChannels.upper || !exitChannels.lower) {
+      return { signal: 'NEUTRAL' };
+    }
+
+    // Hata kontrolü ekle
+    if (!entryChannels.upper || !entryChannels.lower) {
+      logger.warn(`20 günlük Donchian kanalı hesaplanamadı: ${symbol}`);
+      return { signal: 'NEUTRAL' };
+    }
+
+    // ATR hesapla
+    const atr = await binanceService.calculateATR(symbol, atrPeriod);
+    if (!atr) return { signal: 'NEUTRAL' };
+
+    // Giriş sinyalleri
+    let signal = 'NEUTRAL';
+    let stopLoss, takeProfit;
+
+    // 55 günlük breakout kontrolü (Sistem 2)
+    if (currentPrice > entryChannels.upper) {
+      signal = 'BUY';
+      stopLoss = currentPrice - 2 * atr; // 2N stop loss
+      takeProfit = currentPrice + 4 * atr; // 4N take profit
+    } else if (currentPrice < entryChannels.lower) {
+      signal = 'SELL';
+      stopLoss = currentPrice + 2 * atr;
+      takeProfit = currentPrice - 4 * atr;
+    }
+
+    // 20 günlük breakout kontrolü (Sistem 1)
+    if (currentPrice > entryChannels.upper || currentPrice < entryChannels.lower) {
+      // Son breakout'ın kayıp olup olmadığını kontrol et (basitleştirilmiş)
+      // Bu kısım için geçmiş breakout verilerini saklamanız gerekebilir
+      signal = signal === 'NEUTRAL' ? 'WEAK_' + signal : signal;
+    }
+
+    logger.info(`Turtle Signal for ${symbol}: ${signal}, Price: ${currentPrice}, EntryUpper: ${entryChannels.upper}, EntryLower: ${entryChannels.lower}, ATR: ${atr}`);
+
+    return {
+      signal,
+      stopLoss,
+      takeProfit,
+      allocation: this.parameters.riskPercentage,
+      atr
+    };
+  }
+}
+
+module.exports = TurtleStrategy;

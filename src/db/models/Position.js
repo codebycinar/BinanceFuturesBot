@@ -19,6 +19,11 @@ module.exports = (sequelize, DataTypes) => {
                 this.setDataValue('entryPrices', JSON.stringify(value));
             },
         },
+        strategy: {
+            type: DataTypes.STRING,
+            defaultValue: 'turtle', // Varsayılan değer
+            allowNull: false
+        },
         totalAllocation: {
             type: DataTypes.FLOAT,
             defaultValue: 0.0,

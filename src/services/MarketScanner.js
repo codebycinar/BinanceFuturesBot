@@ -1,58 +1,27 @@
 // services/MarketScanner.js
-
-const BollingerStrategy = require('../strategies/BollingerStrategy');
+const { Op, json } = require('sequelize');
+const TurtleStrategy = require('../strategies/TurtleStrategy');
 const config = require('../config/config');
 const logger = require('../utils/logger');
 const { models } = require('../db/db');
-const { Telegraf } = require('telegraf');
-const { Position } = models;
-const dotenv = require("dotenv");
-const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
-const chatId = process.env.TELEGRAM_CHAT_ID;
+const TelegramService = require('./TelegramService');
+const { Position, Signal } = models;
 
-const BinanceService = require('../services/BinanceService');
-const OrderService = require('../services/OrderService');
-
-(async () => {
-    try {
-        dotenv.config();
-        bot.start((ctx) => ctx.reply('Merhaba!'));
-        bot.launch();
-        const binanceService = new BinanceService();
-        await binanceService.initialize();
-
-        const orderService = new OrderService(binanceService);
-        const marketScanner = new MarketScanner(binanceService, orderService);
-
-        logger.info('Market Scanner started.');
-
-        // Market taramasını başlat
-        await marketScanner.scanAllSymbols();
-
-        // Periyodik tarama
-        setInterval(async () => {
-            try {
-                await marketScanner.scanAllSymbols();
-                await marketScanner.flushWeakSignalBuffer();
-            } catch (error) {
-                logger.error('Error during Market Scanner periodic scan:', error);
-            }
-        }, 60 * 1000); // 1 dakikada bir çalıştır
-    } catch (error) {
-        logger.error('Error starting Market Scanner:', error);
-    }
-})();
 
 class MarketScanner {
     constructor(binanceService, orderService) {
         this.binanceService = binanceService;
         this.orderService = orderService;
-        this.strategy = new BollingerStrategy('BollingerStrategy');
+        this.strategy = new TurtleStrategy('TurtleStrategy');
         this.positionStates = {};
-        this.weakSignalBuffer = []; // Zayıf sinyalleri gruplamak için buffer
-        this.weakSignalBatchSize = 5; // Her mesajda kaç sinyal birleştirileceği
+        this.activeScans = new Set();
+        this.closestPairs = [];
     }
 
+    async initialize() {
+        await this.strategy.initialize(); // Stratejiyi başlat
+        logger.info('MarketScanner strateji uygulamaya hazır.');
+    }
     /**
    * Borsada TRADING durumunda olan tüm sembolleri döndürür.
    */
@@ -69,62 +38,81 @@ class MarketScanner {
             for (const symbol of usdtSymbols) {
                 await this.scanSymbol(symbol);
             }
+
+            await this.sendClosestPairsNotification();
         } catch (error) {
             logger.error('Error scanning all symbols:', error);
         }
     }
 
-    async sendWeakSignalMessage(symbol, signalType, entryPrice, stopLoss, takeProfit, allocation, unmetConditions) {
-        const message = `
-    ⚠️ Weak ${signalType} signal detected for ${symbol}.
-    - Entry Price: ${entryPrice}
-    - Stop Loss: ${stopLoss}
-    - Take Profit: ${takeProfit}
-    - Allocation: ${allocation}
-    - Unmet Conditions: ${unmetConditions}
-    ⚠️ No position opened.
-    `;
-
-        this.weakSignalBuffer.push(message);
-
-        if (this.weakSignalBuffer.length >= this.weakSignalBatchSize) {
-            await this.flushWeakSignalBuffer();
-        }
-    }
-
-    /**
-     * Buffer'daki tüm zayıf sinyalleri tek bir mesaj olarak gönderir ve buffer'ı temizler.
-     */
-    async flushWeakSignalBuffer() {
-        if (this.weakSignalBuffer.length === 0) return;
-
-        const combinedMessage = `
-    ⚠️ Weak Signal Summary (${this.weakSignalBuffer.length} signals):
-    ${this.weakSignalBuffer.join("\n")}
-    `;
-
-        try {
-            await bot.telegram.sendMessage(chatId, combinedMessage);
-        } catch (error) {
-            logger.error(`Error sending weak signal batch message: ${error.message}`);
+    async sendSignalMessage(symbol, signalType, signalPower, entryPrice, stopLoss, takeProfit, allocation, rsi, adx, bbBasis, stochastic, atr, unmetConditions) {
+        // Bildirim yapılmasını kontrol et
+        const shouldNotify = await this.shouldNotifySignal(symbol);
+        if (!shouldNotify) {
+            logger.info(`Notification skipped for ${symbol} as it was sent within the last hour.`);
+            return;
         }
 
-        this.weakSignalBuffer = [];
+        let message = '';
+
+        if (signalPower === 'WEAK_BUY' || signalPower === 'WEAK_SELL') {
+            {
+                message = `
+                ⚠️ Weak ${signalType} signal detected for ${symbol}.
+                - Entry Price: ${Number(entryPrice).toFixed(4)} 
+                - Stop Loss: ${Number(stopLoss).toFixed(4)}
+                - Take Profit: ${Number(takeProfit).toFixed(4)}
+                - Allocation: ${allocation.join(', ')} 
+                - Rsi: ${Number(rsi)?.toFixed(2) ?? 'N/A'} 
+                - Adx: ${Number(adx)?.toFixed(2) ?? 'N/A'}
+                - Stochastic: ${Number(stochastic)?.toFixed(2) ?? 'N/A'}
+                - Atr: ${Number(atr.current)?.toFixed(4) ?? 'N/A'} (Trend: ${atr.trend ?? 'N/A'})
+                - Bollinger Basis: ${Number(bbBasis)?.toFixed(4) ?? 'N/A'}
+                - Unmet Conditions: ${unmetConditions || 'None'}
+                ⚠️ No position opened.
+                `;
+            }
+
+            if (signalPower === 'BUY' || signalPower === 'SELL') {
+                message = `
+                💸 Strong ${signalType} signal detected for ${symbol}.
+                - Entry Price: ${Number(entryPrice).toFixed(4)} 
+                - Stop Loss: ${Number(stopLoss).toFixed(4)}
+                - Take Profit: ${Number(takeProfit).toFixed(4)}
+                - Allocation: ${allocation.join(', ')} 
+                - Rsi: ${Number(rsi)?.toFixed(2) ?? 'N/A'} 
+                - Adx: ${Number(adx)?.toFixed(2) ?? 'N/A'}
+                - Stochastic: ${Number(stochastic)?.toFixed(2) ?? 'N/A'}
+                - Atr: ${Number(atr.current)?.toFixed(4) ?? 'N/A'} (Trend: ${atr.trend ?? 'N/A'})
+                - Bollinger Basis: ${Number(bbBasis)?.toFixed(4) ?? 'N/A'}
+                `;
+
+            }
+
+            try {
+                await TelegramService.sendMessage(message);
+                logger.info(`Weak signal notification sent for ${symbol}`);
+
+                // Bildirimi veritabanında işaretle
+                await this.markSignalAsNotified(symbol);
+            } catch (error) {
+                logger.error(`Error sending weak signal message for ${symbol}: ${error.message}`);
+            }
+        }
     }
 
     /**
      * Yeni pozisyon açıldığında mesaj gönderir.
      */
-    async notifyNewPosition(symbol, allocation, stopLoss, takeProfit) {
+    async notifyNewPosition(symbol, quantity, entryPrice) {
         const message = `
-    ✅ New position opened for ${symbol}:
-    - Allocation: ${allocation} USDT
-    - Stop Loss: ${stopLoss}
-    - Take Profit: ${takeProfit}
-    `;
+        ✅ New position opened for ${symbol}:
+        - Allocation: ${quantity} USDT
+        - Entry Price: ${entryPrice}
+        `;
 
         try {
-            await bot.telegram.sendMessage(chatId, message);
+            await TelegramService.sendMessage(message);
         } catch (error) {
             logger.error(`Error sending new position message: ${error.message}`);
         }
@@ -136,7 +124,7 @@ class MarketScanner {
     `;
 
         try {
-            await bot.telegram.sendMessage(chatId, message);
+            await TelegramService.sendMessage(message);
         } catch (error) {
             logger.error(`Error sending position closed message: ${error.message}`);
         }
@@ -151,7 +139,7 @@ class MarketScanner {
 `;
 
         try {
-            await bot.telegram.sendMessage(chatId, message);
+            await TelegramService.sendMessage(message);
         } catch (error) {
             logger.error(`Error sending position closed message: ${error.message}`);
         }
@@ -167,30 +155,73 @@ class MarketScanner {
 `;
 
         try {
-            await bot.telegram.sendMessage(chatId, message);
+            await TelegramService.sendMessage(message);
         } catch (error) {
             logger.error(`Error sending error message: ${error.message}`);
         }
     }
 
-    /**
-     * Config'den tanımlanan sembolleri tarar.
-     */
-    async scanConfigSymbols() {
+    async saveSignalToDB(signal) {
         try {
-            const symbols = config.topSymbols;
-            if (!symbols || symbols.length === 0) {
-                logger.warn('No symbols defined in config.topSymbols');
+            // Ensure required fields are present
+            if (!signal) {
+                console.error('Signal is undefined');
                 return;
             }
 
-            logger.info(`Scanning config-defined symbols: ${symbols.join(', ')}`, { timestamp: new Date().toISOString() });
+            // Example: Safely handle tags array
+            const tags = (signal.tags || []).join(',');
 
-            for (const symbol of symbols) {
-                await this.scanSymbol(symbol);
+            // Save to database
+            await Signal.create({
+                symbol: signal.symbol,
+                signalType: signal.signalType,
+                entryPrice: signal.entryPrice,
+                stopLoss: signal.stopLoss,
+                takeProfit: signal.takeProfit,
+                allocation: signal.allocation,
+                rsi: signal.rsi,
+                adx: signal.adx,
+                unmetConditions: signal.unmetConditions,
+                tags: tags, // Safely joined tags
+                isNotified: false
+            });
+
+            console.log(`Signal saved successfully for ${signal.symbol}`);
+        } catch (error) {
+            console.error(`Error saving signal to DB for ${signal?.symbol}:`, error.message);
+        }
+    }
+
+    async shouldNotifySignal(symbol) {
+        const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000); // 1 saat önce
+        const recentSignal = await Signal.findOne({
+            where: {
+                symbol,
+                isNotified: true,
+                notificationDate: { [Op.gte]: oneHourAgo }, // Son 1 saat içinde bildirim yapılmış mı?
+            },
+            order: [['notificationDate', 'DESC']],
+        });
+
+        return !recentSignal; // Eğer son 1 saat içinde bildirim yapılmışsa false, aksi halde true
+    }
+
+    async markSignalAsNotified(symbol) {
+        try {
+            const signal = await Signal.findOne({
+                where: { symbol, isNotified: false },
+                order: [['createdAt', 'DESC']], // En yeni sinyali al
+            });
+
+            if (signal) {
+                signal.isNotified = true;
+                signal.notificationDate = new Date();
+                await signal.save();
+                logger.info(`Signal marked as notified for ${symbol}`);
             }
         } catch (error) {
-            logger.error('Error scanning config-defined symbols:', error);
+            logger.error(`Error marking signal as notified for ${symbol}: ${error.message}`);
         }
     }
 
@@ -214,18 +245,21 @@ class MarketScanner {
 
             const timeframe = config.strategy.timeframe || '1h';
             const limit = config.strategy.limit || 100;
+            if (!Number.isInteger(limit) || limit <= 0) {
+                throw new Error(`Invalid limit value for ${symbol}: ${limit}`);
+            }
             const candles = await this.binanceService.getCandles(symbol, timeframe, limit);
 
-            if (!candles || candles.length === 0) {
-                logger.warn(`No candles fetched for ${symbol}. Skipping.`);
+            if (!candles || candles.length < 20) {
+                logger.warn(`No enough candles for ${symbol}. Skipping.`);
                 return;
             }
 
             // Açık pozisyon kontrolü
             let position = await Position.findOne({ where: { symbol, isActive: true } });
             if (position) {
-                logger.info(`Active position found for ${symbol}. Managing position.`);
-                await this.managePosition(position, candles);
+                logger.info(`Active position found for ${symbol}. Delegating to PositionManager.`);
+                //await this.managePosition(position, candles);
                 return;
             }
 
@@ -238,22 +272,82 @@ class MarketScanner {
                 return;
             }
 
+
             // Yeni sinyal üretme
-            const { signal, stopLoss, takeProfit, allocation, unmetConditions } = await this.strategy.generateSignal(candles, symbol);
+            const { signal, stopLoss, takeProfit, allocation, rsi, adx, unmetConditions, bbBasis, stochasticK, atr } = await this.strategy.generateSignal(candles, symbol, this.binanceService);
+            // Donchian Kanallarını Hesapla
+            const entryChannels = await this.binanceService.calculateDonchianChannels(symbol, 20);
+            // Pozisyon açma
+            const currentPrice = parseFloat(candles[candles.length - 1].close);
+            // Kanal Genişliği Hesapla
+            const channelWidth = entryChannels.upper - entryChannels.lower;
+            let percentage, direction;
+            if (currentPrice >= entryChannels.upper) {
+                percentage = 0;
+                direction = "🟢 UPPER BREAKOUT";
+            } else if (currentPrice <= entryChannels.lower) {
+                percentage = 0;
+                direction = "🔴 LOWER BREAKOUT";
+            } else {
+                const distanceToUpper = entryChannels.upper - currentPrice;
+                const distanceToLower = currentPrice - entryChannels.lower;
+                percentage = ((distanceToLower / channelWidth) * 100).toFixed(2); // String olarak kalabilir
+                direction = "🟡 INSIDE CHANNEL";
+            }
+
+            const newPair = {
+                symbol,
+                percentage: parseFloat(percentage), // Sayısal hale getir
+                direction,
+                price: parseFloat(currentPrice), // Sayısal hale getir
+                upper: parseFloat(entryChannels.upper), // Sayısal hale getir
+                lower: parseFloat(entryChannels.lower) // Sayısal hale getir
+            };
+
+            // En yakın çiftleri güncelle
+            this.updateClosestPairs(newPair);
 
             if (signal === 'NEUTRAL') {
                 logger.info(`No actionable signal for ${symbol}.`);
                 return;
             }
+            else {
+                const dbSignal = {
+                    symbol,
+                    signalType: signal,
+                    entryPrice: currentPrice,
+                    stopLoss,
+                    takeProfit,
+                    allocation,
+                    rsi,
+                    adx,
+                    bbBasis,
+                    stochasticK,
+                    atr,
+                    tags: unmetConditions ? ['weak', ...unmetConditions.split(',')] : [],
+                };
 
-            // Pozisyon açma
-            const currentPrice = candles[candles.length - 1].close;
+                // Sinyali veritabanına kaydet
+                await this.saveSignalToDB(dbSignal);
+            }
 
             if (signal === 'BUY' || signal === 'SELL') {
-                await this.openNewPosition(symbol, signal, currentPrice, stopLoss, takeProfit, allocation);
+                if (config.strategy.enableTrading) {
+
+                    await this.openNewPosition(symbol, signal, currentPrice);
+                }
+                else
+                    await this.sendSignalMessage(symbol, signalType, signal, currentPrice, stopLoss, takeProfit, allocation, rsi, adx, bbBasis, stochasticK, atr, unmetConditions);
             } else if (signal === 'WEAK_BUY' || signal === 'WEAK_SELL') {
                 const signalType = signal === 'WEAK_BUY' ? 'BUY' : 'SELL';
-                await this.sendWeakSignalMessage(symbol, signalType, currentPrice, stopLoss, takeProfit, allocation, unmetConditions);
+                await this.sendSignalMessage(symbol, signalType, signal, currentPrice, stopLoss, takeProfit, allocation, rsi, adx, bbBasis, stochasticK, atr, unmetConditions);
+            }
+            else if (newPair.percentage >= 98) {
+                if (config.strategy.enableTrading) {
+                
+                    logger.info(`High proximity detected for ${symbol}: ${newPair.percentage}%. Opening position...`);
+                    await this.openNewPosition(symbol, direction === "UPPER" ? "BUY" : "SELL", currentPrice);
+                }
             }
         } catch (error) {
             logger.error(`Error scanning symbol ${symbol}: ${error.message || JSON.stringify(error)}`);
@@ -261,13 +355,123 @@ class MarketScanner {
         }
     }
 
-    /**
-     * Zayıf sinyaller için özel Telegram mesajı gönderme.
-     */
-    async handleWeakSignal(symbol, signal, entryPrice, stopLoss, takeProfit, allocation, unmetConditions) {
-        if (signal === 'WEAK_BUY' || signal === 'WEAK_SELL') {
-            const signalType = signal === 'WEAK_BUY' ? 'BUY' : 'SELL';
-            await this.sendWeakSignalMessage(symbol, signalType, entryPrice, stopLoss, takeProfit, allocation, unmetConditions);
+    updateClosestPairs(newPair) {
+        const { closestPairs } = this;
+
+        // Veri doğrulama: Tüm sayısal alanlar kontrol ediliyor
+        if (
+            typeof newPair.price !== 'number' ||
+            typeof newPair.upper !== 'number' ||
+            typeof newPair.lower !== 'number' ||
+            typeof newPair.percentage !== 'number'
+        ) {
+            logger.warn(`Invalid data for symbol ${newPair.symbol}:`, newPair);
+            return;
+        }
+
+        // Aynı sembol zaten listede var mı kontrol et
+        const existingPairIndex = closestPairs.findIndex(pair => pair.symbol === newPair.symbol);
+
+        if (existingPairIndex !== -1) {
+            // Eğer sembol zaten listede varsa, sadece güncelle
+            if (newPair.percentage > closestPairs[existingPairIndex].percentage) {
+                closestPairs[existingPairIndex] = newPair;
+                logger.info(`Updated existing pair in closestPairs: ${newPair.symbol}`);
+            } else {
+                logger.info(`Skipped updating existing pair in closestPairs: ${newPair.symbol}`);
+            }
+        } else {
+            // Liste doluysa ve yeni sembol en düşük skorlu sembolden daha iyiyse
+            if (closestPairs.length === 5) {
+                const lowestScorePair = closestPairs.reduce((min, current) =>
+                    current.percentage < min.percentage ? current : min
+                );
+                if (newPair.percentage > lowestScorePair.percentage) {
+                    this.closestPairs = closestPairs.filter(item => item.symbol !== lowestScorePair.symbol);
+                    this.closestPairs.push(newPair);
+                    logger.info(`Replaced lowest score pair with new pair: ${newPair.symbol}`);
+                }
+            } else {
+                // Liste dolu değilse doğrudan ekle
+                this.closestPairs.push(newPair);
+                logger.info(`Added new pair to closestPairs: ${newPair.symbol}`);
+            }
+        }
+
+        // Listeyi skora göre sırala (yüksekten düşüğe)
+        this.closestPairs.sort((a, b) => b.percentage - a.percentage);
+    }
+
+    async sendClosestPairsNotification() {
+        try {
+            const { closestPairs } = this;
+
+            if (closestPairs.length === 0) {
+                logger.info("No closest pairs to notify.");
+                return;
+            }
+
+            let message = "📈 En yakın 5 sembol:\n";
+
+            logger.info("Pairs : " + JSON.stringify(closestPairs));
+
+            for (const pair of closestPairs) {
+                const formattedPrice = typeof pair.price === 'number' ? pair.price.toFixed(4) : 'N/A';
+                const formattedUpper = typeof pair.upper === 'number' ? pair.upper.toFixed(4) : 'N/A';
+                const formattedLower = typeof pair.lower === 'number' ? pair.lower.toFixed(4) : 'N/A';
+                message += `
+            -------------------
+            🌟 ${pair.symbol}
+            - Yakınlık Oranı: %${pair.percentage}
+            - Kanal Durumu: ${pair.direction}
+            - Mevcut Fiyat: ${formattedPrice}
+            - Donchian Kanalları:
+              Üst: ${formattedUpper}
+              Alt: ${formattedLower}
+            `;
+            }
+
+            // Telegram'a gönder
+            await TelegramService.sendMessage(message);
+            logger.info("En yakın 5 sembol bildirimi gönderildi.");
+        } catch (error) {
+            logger.error(`Error sending closest pairs notification: ${error.message}`);
+        }
+    }
+
+    async openNewPosition(symbol, signal, entryPrice) {
+        try {
+            // 1) Pozisyon boyutunu OrderService ile hesapla
+            const quantity = await this.orderService.calculatePositionSize(
+                symbol,
+                entryPrice,
+                config.strategy.riskPerTrade
+            );
+
+            // 2) Binance üzerinden pozisyon aç
+            await this.binanceService.placeMarketOrder({
+                symbol,
+                side: signal,
+                quantity,
+                positionSide: signal === 'BUY' ? 'LONG' : 'SHORT'
+            });
+
+            // 3) Pozisyonu veritabanına kaydet (StopLoss/TakeProfit OPSİYONEL)
+            await Position.create({
+                symbol,
+                side: signal,
+                entryPrice,
+                isActive: true,
+                units: 1 // Turtle'da artırımlı eklemeler için
+            });
+
+            // 4) Yeni pozisyon bildirimi gönder
+            await this.notifyNewPosition(symbol, quantity, entryPrice);
+
+            logger.info(`Yeni Turtle pozisyonu: ${symbol} ${signal}`);
+
+        } catch (error) {
+            logger.error(`Pozisyon açma hatası (${symbol}): ${error.message}`);
         }
     }
 
@@ -293,29 +497,6 @@ class MarketScanner {
         }
     }
 
-    // Bollinger bandı hesaplama metodu
-    calculateBollingerBands(candles) {
-        const closePrices = candles.map(c => parseFloat(c.close)).filter(price => !isNaN(price)); // Filter out invalid prices
-
-        const period = 20; // Bollinger Band periyodu
-        const stdDevMultiplier = 2;
-
-        if (closePrices.length < period) {
-            throw new Error('Not enough data to calculate Bollinger Bands.');
-        }
-
-        const recentPrices = closePrices.slice(-period);
-        const mean = recentPrices.reduce((acc, val) => acc + val, 0) / period;
-        const variance = recentPrices.reduce((acc, val) => acc + Math.pow(val - mean, 2), 0) / period;
-        const stdDev = Math.sqrt(variance);
-
-        return {
-            upper: mean + stdDevMultiplier * stdDev,
-            lower: mean - stdDevMultiplier * stdDev,
-            basis: mean,
-        };
-    }
-
     // Pozisyonu kapatma metodu
     async closePosition(position, closePrice) {
         const { symbol, totalAllocation, entries } = position;
@@ -337,144 +518,43 @@ class MarketScanner {
         }
     }
 
-    getNextCandleCloseTime(timeframe) {
-        const now = new Date();
-        const timeframes = {
-            '1m': 60 * 1000,
-            '5m': 5 * 60 * 1000,
-            '1h': 60 * 60 * 1000,
-        };
-        const ms = timeframes[timeframe] || 60 * 60 * 1000;
-        return new Date(Math.ceil(now.getTime() / ms) * ms);
-    }
-    async openNewPosition(symbol, signal, entryPrice, stopLoss, takeProfit) {
-        const allocation = config.calculate_position_size
-            ? config.riskPerTrade * await this.binanceService.getFuturesBalance()
-            : config.static_position_size;
+    calculateATR(candles, period = 14) {
+        const validCandles = candles.filter(
+            c => !isNaN(parseFloat(c.high)) && !isNaN(parseFloat(c.low)) && !isNaN(parseFloat(c.close))
+        );
 
-        const quantity = await this.orderService.calculateStaticPositionSize(symbol);
-
-        logger.info(`Opening position for ${symbol}: Entry Price=${entryPrice}, Signal=${signal}, Quantity=${quantity}, Allocation=${allocation} USDT, Stop Loss=${stopLoss}, Take Profit=${takeProfit}`);
-
-        await this.orderService.placeMarketOrder({
-            symbol,
-            side: signal,
-            quantity,
-            positionSide: signal === 'BUY' ? 'LONG' : 'SHORT',
-        });
-
-        // Stop Loss ve Take Profit emirlerini yerleştir
-        const closeSide = signal === 'BUY' ? 'SELL' : 'BUY';
-        const positionSide = signal === 'BUY' ? 'LONG' : 'SHORT';
-
-        // Stop Loss Emiri
-        await this.orderService.placeStopLossOrder({
-            symbol,
-            side: closeSide,
-            quantity,
-            stopPrice: stopLoss,
-            price: stopLoss * (signal === 'BUY' ? 0.99 : 1.01), // %1 kayma payı
-            positionSide,
-        });
-
-        // Take Profit Emiri
-        await this.orderService.placeTakeProfitOrder({
-            symbol,
-            side: closeSide,
-            quantity,
-            stopPrice: takeProfit,
-            price: takeProfit * (signal === 'BUY' ? 1.01 : 0.99), // %1 kayma payı
-            positionSide,
-        });
-
-        await Position.create({
-            symbol,
-            entries: signal === 'BUY' ? 1 : -1,
-            entryPrices: [entryPrice],
-            totalAllocation: allocation,
-            isActive: true,
-            step: 1,
-            nextCandleCloseTime: this.getNextCandleCloseTime('1h'),
-            stopLoss,
-            takeProfit,
-        });
-
-        logger.info(`New position opened for ${symbol} with allocation ${allocation} USDT, Stop Loss=${stopLoss}, Take Profit=${takeProfit}.`);
-        await this.notifyNewPosition(symbol, allocation, stopLoss, takeProfit);
-    }
-
-    async managePosition(position, candles) {
-        try {
-            const lastCandle = candles[candles.length - 1];
-            const currentPrice = parseFloat(lastCandle.close); // Opsiyonel: Gerçek zamanlı fiyat için WebSocket kullanılabilir
-            const { stopLoss, takeProfit, entries, symbol } = position;
-
-            const isLong = entries > 0;
-            const isShort = entries < 0;
-
-            let shouldClose = false;
-
-            if (isLong) {
-                if (currentPrice >= takeProfit) {
-                    logger.info(`Take profit reached for LONG position on ${symbol}. Closing position at ${currentPrice}.`);
-                    shouldClose = true;
-                } else if (currentPrice <= stopLoss) {
-                    logger.info(`Stop loss reached for LONG position on ${symbol}. Closing position at ${currentPrice}.`);
-                    shouldClose = true;
-                }
-            } else if (isShort) {
-                if (currentPrice <= takeProfit) {
-                    logger.info(`Take profit reached for SHORT position on ${symbol}. Closing position at ${currentPrice}.`);
-                    shouldClose = true;
-                } else if (currentPrice >= stopLoss) {
-                    logger.info(`Stop loss reached for SHORT position on ${symbol}. Closing position at ${currentPrice}.`);
-                    shouldClose = true;
-                }
-            }
-
-            if (shouldClose) {
-                // Açık emirlerin iptali (eğer varsa)
-                await this.orderService.cancelOpenOrders(symbol);
-                await this.closePosition(position, currentPrice);
-                logger.info(`Position closed successfully for ${symbol} at ${currentPrice}`);
-            } else {
-                logger.info(`No action needed for position on ${symbol}. Current Price=${currentPrice}, Stop Loss=${stopLoss}, Take Profit=${takeProfit}`);
-            }
-        } catch (error) {
-            logger.error(`Error managing position for ${symbol}: ${error.message}`);
-            await this.notifyError(symbol, error.message);
+        if (validCandles.length < period) {
+            throw new Error('Not enough valid data to calculate ATR');
         }
-    }
 
-    async addOrderToPosition(position, entryPrice, allocation) {
-        try {
-            position.entries += 1;
-            position.entryPrices = [...position.entryPrices, entryPrice];
-            position.totalAllocation += allocation;
-            await position.save();
+        const trueRanges = [];
+        for (let i = 1; i < validCandles.length; i++) {
+            const currentHigh = parseFloat(validCandles[i].high);
+            const currentLow = parseFloat(validCandles[i].low);
+            const previousClose = parseFloat(validCandles[i - 1].close);
 
-            // Emir yönünü belirleme
-            const signal = allocation > 0 ? 'SELL' : 'BUY'; // Signal kesinleşmeli
-            const positionSide = signal === 'BUY' ? 'LONG' : 'SHORT'; // Hedge moduna göre ayarlanabilir
-
-            if (!signal || allocation <= 0) {
-                logger.error(`Invalid signal or allocation for ${position.symbol}. Signal: ${signal}, Allocation: ${allocation}`);
-                return;
-            }
-
-            const orderData = {
-                symbol: position.symbol,
-                side: signal,
-                quantity: allocation,
-                positionSide,
-            };
-
-            logger.info(`Placing MARKET order for ${position.symbol}:`, orderData);
-            await this.binanceService.placeMarketOrder(orderData);
-        } catch (error) {
-            logger.error(`Error placing market order for ${position.symbol}: ${error.message}`);
-            throw error;
+            const tr = Math.max(
+                currentHigh - currentLow,
+                Math.abs(currentHigh - previousClose),
+                Math.abs(currentLow - previousClose)
+            );
+            trueRanges.push(tr);
         }
+
+        const atrValues = [];
+        for (let i = period - 1; i < trueRanges.length; i++) {
+            const slice = trueRanges.slice(i - period + 1, i + 1);
+            const atr = slice.reduce((acc, val) => acc + val, 0) / period;
+            atrValues.push(atr);
+        }
+
+        const currentATR = atrValues[atrValues.length - 1];
+        const trendATRValues = atrValues.slice(-7);
+        const trendSum = trendATRValues.reduce((acc, val) => acc + val, 0);
+        const averageATR = trendSum / 7;
+        const atrTrend = currentATR > averageATR * 1.1 ? 'UP' : currentATR < averageATR * 0.9 ? 'DOWN' : 'NEUTRAL';
+
+        return { current: currentATR, trend: atrTrend };
     }
 
 }
