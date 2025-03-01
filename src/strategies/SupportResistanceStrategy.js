@@ -8,6 +8,10 @@ class SupportResistanceStrategy {
     this.pivotThreshold = 0.002; // 0.2% threshold for pivot points
   }
 
+  async initialize() {
+    console.log(`SupportResistanceStrategy Loaded `);
+}
+
   findSupportResistanceLevels() {
     if (!this.candlesticks || this.candlesticks.length < this.period * 2) {
       logger.warn('Not enough candlesticks for analysis');

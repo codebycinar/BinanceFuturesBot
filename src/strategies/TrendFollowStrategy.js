@@ -5,6 +5,9 @@ class TrendFollowStrategy {
     this.candlesticks = candlesticks;
   }
 
+  async initialize() {
+    console.log(`TrendFollowStrategy Loaded `);
+}
   analyze() {
     const closes = this.candlesticks.map(candle => candle.close);
 

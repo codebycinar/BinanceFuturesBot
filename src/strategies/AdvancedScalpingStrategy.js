@@ -20,6 +20,10 @@ class AdvancedScalpingStrategy {
         this.dxHistory = [];
     }
 
+    async initialize() {
+        console.log(`AdvancedScalpingStrategy Loaded `);
+    }
+
     /**
      * 1m mumlarına bakarak trend ve sinyal üret
      */

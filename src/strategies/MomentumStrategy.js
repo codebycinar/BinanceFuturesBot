@@ -13,6 +13,9 @@ class AdvancedScalpingStrategy {
         this.supportResistanceBars = config.supportResistanceBars || 15; // Destek/direnç için bar sayısı
     }
 
+    async initialize() {
+        console.log(`AdvancedScalpingStrategy Loaded `);
+    }
     /**
      * Squeeze Momentum hesaplama
      */

@@ -21,7 +21,9 @@ class MultiTimeframeScalpingStrategy {
         this.lrScalingCoefficient1 = config.lrScalingCoefficient1 || 1; // Scaling Coefficient Level 1
         this.lrScalingCoefficient2 = config.lrScalingCoefficient2 || 2; // Scaling Coefficient Level 2
     }
-
+    async initialize() {
+        console.log(`MultiTimeframeScalpingStrategy Loaded `);
+    }
     /**
      * 1m mumlarına bakarak trend ve sinyal üret
      */
