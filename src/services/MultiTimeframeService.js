@@ -276,11 +276,11 @@ class MultiTimeframeService {
                 const indicators = mtfData.indicators[timeframe];
                 if (!indicators) continue;
 
-                const analysis = this.analyzeTrend(indicators);
-                if (analysis.trend === 'bullish') bullishCount++;
-                if (analysis.trend === 'bearish') bearishCount++;
+                const timeframeAnalysis = this.analyzeTrend(indicators);
+                if (timeframeAnalysis.trend === 'bullish') bullishCount++;
+                if (timeframeAnalysis.trend === 'bearish') bearishCount++;
 
-                analysis.signals[timeframe] = analysis;
+                analysis.signals[timeframe] = timeframeAnalysis;
             }
 
             // Calculate overall trend based on multiple timeframes
