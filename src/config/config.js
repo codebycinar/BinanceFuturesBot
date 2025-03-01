@@ -17,7 +17,7 @@ module.exports = {
     stochasticSignalPeriod: 3, // Stochastic sinyal periyodu
     atrLookback: 21, // ATR yön kontrolü için bakılacak mum sayısı
     allocation: [0.2, 0.3, 0.5], // İlk, ikinci ve üçüncü alımlar için bütçe oranları
-    timeframe: '4h',
+    timeframe: '1d',
     limit: 20,
     keyValue: 2,               // ATR çarpanı
     riskReward: 3,             // Risk/Kar oranı
@@ -25,6 +25,8 @@ module.exports = {
     entryPeriod: 20,
     exitPeriod: 10,
     maxAdditions: 4,
+    closesPercentageThreshold: 85,
+    closesPercentageThresholdForPosition: 98,
     enableTrading: true, // Gerçek alım satım yapmak için true yapın
   },
   // Risk ve ödül oranları

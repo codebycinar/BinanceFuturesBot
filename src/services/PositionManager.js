@@ -34,91 +34,144 @@ async function positionManager() {
     }
 }
 
+// async function managePosition(position, candles) {
+//     try {
+//         const currentPrice = parseFloat(candles[candles.length - 1].close);
+//         const symbol = position.symbol;
+
+//         // Turtle parametreleri
+//         const exitPeriod = config.strategy.exitPeriod;
+//         const entryPeriod = config.strategy.entryPeriod;
+//         const atrPeriod = config.strategy.atrPeriod;
+
+//         // Donchian ve ATR hesapla
+//         const exitChannels = await binanceService.calculateDonchianChannels(symbol, exitPeriod);
+//         const entryChannels = await binanceService.calculateDonchianChannels(symbol, entryPeriod);
+//         const atr = await binanceService.calculateATR(symbol, atrPeriod);
+
+//         // LONG pozisyon yönetimi
+//         if (position.side === 'LONG') {
+//             const atr = await binanceService.calculateATR(symbol, config.strategy.atrPeriod);
+//             const priceIncrease = currentPrice - position.lastAddPrice || position.entryPrice;
+
+//             if (priceIncrease >= 0.5 * atr && position.units < config.strategy.maxUnits) {
+//                 logger.info(`Adding unit to LONG position for ${symbol}. Price increased by ${priceIncrease} (0.5 ATR: ${0.5 * atr})`);
+//                 await addPosition(position, currentPrice, atr);
+//             }
+//         }
+
+//         // SHORT pozisyon yönetimi
+//         if (position.side === 'SHORT') {
+//             const atr = await binanceService.calculateATR(symbol, config.strategy.atrPeriod);
+//             const priceDecrease = position.lastAddPrice - currentPrice || position.entryPrice - currentPrice;
+
+//             if (priceDecrease >= 0.5 * atr && position.units < config.strategy.maxUnits) {
+//                 logger.info(`Adding unit to SHORT position for ${symbol}. Price decreased by ${priceDecrease} (0.5 ATR: ${0.5 * atr})`);
+//                 await addPosition(position, currentPrice, atr);
+//             }
+//         }
+
+//         // Pozisyon ekleme kuralı (1 ATR hareket)
+//         //await checkAddToPosition(position, currentPrice, atr);
+
+//     } catch (error) {
+//         logger.error(`Hata managePosition (${position.symbol}):`, error);
+//     }
+// }
+
 async function managePosition(position, candles) {
     try {
         const currentPrice = parseFloat(candles[candles.length - 1].close);
         const symbol = position.symbol;
-
-        // Turtle parametreleri
+        const timeframe = config.strategy.timeframe;
         const exitPeriod = config.strategy.exitPeriod;
         const atrPeriod = config.strategy.atrPeriod;
 
-        // Donchian ve ATR hesapla
-        const exitChannels = await binanceService.calculateDonchianChannels(symbol, exitPeriod);
-        const atr = await binanceService.calculateATR(symbol, atrPeriod);
+        // Doğru timeframe ile ATR ve Donchian kanallarını hesapla
+        const exitChannels = await binanceService.calculateDonchianChannels(symbol, exitPeriod, timeframe);
+        const atr = await binanceService.calculateATR(symbol, atrPeriod, timeframe);
+        const entryChannels = await binanceService.calculateDonchianChannels(symbol, 20, timeframe); // 20-period entry kanalı
 
-        // LONG pozisyon yönetimi
+        // LONG pozisyon için
         if (position.side === 'LONG') {
-            // Çıkış kuralı: Exit Channel'ın altına düşerse
-            if (currentPrice < exitChannels.lower) {
+            // Çıkış kuralı
+            if (currentPrice < exitChannels.lower || currentPrice >= position.takeProfit) {
                 await closePosition(symbol, 'SELL', position, currentPrice);
                 return;
             }
 
-            // Dinamik Trailing Stop (2*ATR)
+            // Trailing Stop
             const newStop = currentPrice - 2 * atr;
             if (newStop > position.stopLoss) {
-                await updateStopLoss(position, newStop);
+                position.stopLoss = newStop;
+                await position.save();
             }
 
-            // Dinamik Take Profit (Trend takip)
-            if (currentPrice > position.entryPrice + 4 * atr) {
-                await closePosition(symbol, 'SELL', position, currentPrice);
-                return;
+            // Pozisyon ekleme: 0.5 ATR ve üst banda temas
+            const priceIncrease = currentPrice - (position.lastAddPrice || position.entryPrice);
+            if (currentPrice >= entryChannels.upper && priceIncrease >= 0.5 * atr && position.units < config.strategy.maxUnits) {
+                await addPosition(position, currentPrice, atr);
             }
         }
 
-        // SHORT pozisyon yönetimi
+        // SHORT pozisyon için
         if (position.side === 'SHORT') {
-            // Çıkış kuralı: Exit Channel'ın üstüne çıkarsa
-            if (currentPrice > exitChannels.upper) {
+            // Çıkış kuralı
+            if (currentPrice > exitChannels.upper || currentPrice <= position.takeProfit) {
                 await closePosition(symbol, 'BUY', position, currentPrice);
                 return;
             }
 
-            // Dinamik Trailing Stop (2*ATR)
+            // Trailing Stop
             const newStop = currentPrice + 2 * atr;
-            if (newStop < position.stopLoss || position.stopLoss === 0) {
-                await updateStopLoss(position, newStop);
+            if (newStop < position.stopLoss) {
+                position.stopLoss = newStop;
+                await position.save();
             }
 
-            // Dinamik Take Profit (Trend takip)
-            if (currentPrice < position.entryPrice - 4 * atr) {
-                await closePosition(symbol, 'BUY', position, currentPrice);
-                return;
+            // Pozisyon ekleme: 0.5 ATR ve alt banda temas
+            const priceDecrease = (position.lastAddPrice || position.entryPrice) - currentPrice;
+            if (currentPrice <= entryChannels.lower && priceDecrease >= 0.5 * atr && position.units < config.strategy.maxUnits) {
+                await addPosition(position, currentPrice, atr);
             }
         }
-
-        // Pozisyon ekleme kuralı (1 ATR hareket)
-        await checkAddToPosition(position, currentPrice, atr);
-
     } catch (error) {
         logger.error(`Hata managePosition (${position.symbol}):`, error);
     }
 }
 
-// Yardımcı fonksiyonlar
-async function updateStopLoss(position, newStop) {
-    position.stopLoss = newStop;
-    await position.save();
-    logger.info(`Stop loss updated: ${position.symbol} → ${newStop}`);
+async function addPosition(position, currentPrice, atr) {
+    try {
+        const quantity = await orderService.calculatePositionSize(
+            position.symbol,
+            currentPrice,
+            config.strategy.riskPerTrade
+        );
 
-    // Binance'de stop loss emrini güncelle
-    await binanceService.cancelOpenOrders(position.symbol);
-    await binanceService.placeStopLossOrder({
-        symbol: position.symbol,
-        side: position.side === 'LONG' ? 'SELL' : 'BUY',
-        quantity: position.quantity,
-        stopPrice: newStop,
-        positionSide: position.side
-    });
+        await binanceService.placeMarketOrder({
+            symbol: position.symbol,
+            side: position.side, // LONG ise BUY, SHORT ise SELL
+            quantity,
+            positionSide: position.side
+        });
+
+        position.units++;
+        position.lastAddPrice = currentPrice;
+        position.stopLoss = position.side === 'LONG'
+            ? currentPrice - 2 * atr
+            : currentPrice + 2 * atr;
+        await position.save();
+
+        logger.info(`Unit added to ${position.symbol}. Total units: ${position.units}`);
+    } catch (error) {
+        logger.error(`Error adding position for ${position.symbol}: ${error.message}`);
+    }
 }
 
 async function checkAddToPosition(position, currentPrice, atr) {
     if (position.units >= config.strategy.maxUnits) return;
 
-    const entryPrice = position.entryPrice;
-    const priceDifference = Math.abs(currentPrice - entryPrice);
+    const priceDifference = Math.abs(currentPrice - position.lastAddPrice || position.entryPrice);
 
     if (priceDifference > atr * 0.5) {
         const newQuantity = await orderService.calculatePositionSize(
@@ -135,21 +188,26 @@ async function checkAddToPosition(position, currentPrice, atr) {
         });
 
         position.units++;
+        position.lastAddPrice = currentPrice;
         position.quantity += newQuantity;
         await position.save();
     }
 }
 
 async function closePosition(symbol, side, position, closePrice) {
-    if (position.strategy !== 'Turtle') return; // Manuel pozisyonlara dokunma
+    if (position.strategy !== 'turtle') {
+        logger.warn(`Non-Turtle position detected for ${symbol}. Skipping close.`);
+        return;
+    }
+
     try {
         await binanceService.closePosition(symbol, side);
         position.isActive = false;
         position.closedPrice = closePrice;
         await position.save();
-        logger.info(`Pozisyon kapatıldı: ${symbol} → ${closePrice}`);
+        logger.info(`Turtle position closed for ${symbol} at ${closePrice}`);
     } catch (error) {
-        logger.error(`Pozisyon kapatma hatası (${symbol}):`, error);
+        logger.error(`Error closing Turtle position for ${symbol}: ${error.message}`);
     }
 }
 

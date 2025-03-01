@@ -7,7 +7,6 @@ const { models } = require('../db/db');
 const TelegramService = require('./TelegramService');
 const { Position, Signal } = models;
 
-
 class MarketScanner {
     constructor(binanceService, orderService) {
         this.binanceService = binanceService;
@@ -16,6 +15,8 @@ class MarketScanner {
         this.positionStates = {};
         this.activeScans = new Set();
         this.closestPairs = [];
+        this.closesPercentageThreshold = config.strategy.closesPercentageThreshold || 90;
+        this.closesPercentageThresholdForPosition = config.strategy.closesPercentageThresholdForPosition || 98;
     }
 
     async initialize() {
@@ -243,15 +244,15 @@ class MarketScanner {
                 throw new Error('Strategy is not initialized');
             }
 
-            const timeframe = config.strategy.timeframe || '1h';
+            const timeframe = config.strategy.timeframe || '1d';
             const limit = config.strategy.limit || 100;
             if (!Number.isInteger(limit) || limit <= 0) {
                 throw new Error(`Invalid limit value for ${symbol}: ${limit}`);
             }
             const candles = await this.binanceService.getCandles(symbol, timeframe, limit);
 
-            if (!candles || candles.length < 20) {
-                logger.warn(`No enough candles for ${symbol}. Skipping.`);
+            if (!candles || candles.length < limit) {
+                logger.warn(`Skipping ${symbol} due to insufficient candles: ${candles.length}/${limit}`);
                 return;
             }
 
@@ -259,7 +260,6 @@ class MarketScanner {
             let position = await Position.findOne({ where: { symbol, isActive: true } });
             if (position) {
                 logger.info(`Active position found for ${symbol}. Delegating to PositionManager.`);
-                //await this.managePosition(position, candles);
                 return;
             }
 
@@ -275,24 +275,22 @@ class MarketScanner {
 
             // Yeni sinyal üretme
             const { signal, stopLoss, takeProfit, allocation, rsi, adx, unmetConditions, bbBasis, stochasticK, atr } = await this.strategy.generateSignal(candles, symbol, this.binanceService);
-            // Donchian Kanallarını Hesapla
             const entryChannels = await this.binanceService.calculateDonchianChannels(symbol, 20);
-            // Pozisyon açma
             const currentPrice = parseFloat(candles[candles.length - 1].close);
-            // Kanal Genişliği Hesapla
             const channelWidth = entryChannels.upper - entryChannels.lower;
             let percentage, direction;
             if (currentPrice >= entryChannels.upper) {
                 percentage = 0;
-                direction = "🟢 UPPER BREAKOUT";
+                direction = "UPPER";
             } else if (currentPrice <= entryChannels.lower) {
                 percentage = 0;
-                direction = "🔴 LOWER BREAKOUT";
+                direction = "LOWER";
             } else {
                 const distanceToUpper = entryChannels.upper - currentPrice;
                 const distanceToLower = currentPrice - entryChannels.lower;
-                percentage = ((distanceToLower / channelWidth) * 100).toFixed(2); // String olarak kalabilir
-                direction = "🟡 INSIDE CHANNEL";
+                const minDistance = Math.min(distanceToUpper, distanceToLower); // En yakın mesafe
+                percentage = ((minDistance / channelWidth) * 100).toFixed(2); // Doğru hesaplama
+                direction = distanceToUpper < distanceToLower ? "UPPER" : "LOWER"; // Yön belirleme
             }
 
             const newPair = {
@@ -304,8 +302,14 @@ class MarketScanner {
                 lower: parseFloat(entryChannels.lower) // Sayısal hale getir
             };
 
-            // En yakın çiftleri güncelle
-            this.updateClosestPairs(newPair);
+            const proximityPercentage = parseFloat(percentage);
+            if (proximityPercentage >= this.closesPercentageThreshold) {
+                this.updateClosestPairs(newPair);
+            } else {
+                // %90'ın altındaysa listeden çıkar
+                this.closestPairs = this.closestPairs.filter(p => p.percentage >= this.closesPercentageThreshold);
+                this.closestPairs.sort((a, b) => b.percentage - a.percentage);
+            }
 
             if (signal === 'NEUTRAL') {
                 logger.info(`No actionable signal for ${symbol}.`);
@@ -334,19 +338,16 @@ class MarketScanner {
             if (signal === 'BUY' || signal === 'SELL') {
                 if (config.strategy.enableTrading) {
 
-                    await this.openNewPosition(symbol, signal, currentPrice);
+                    await this.openNewPosition(symbol, signal, currentPrice, atr);
                 }
                 else
                     await this.sendSignalMessage(symbol, signalType, signal, currentPrice, stopLoss, takeProfit, allocation, rsi, adx, bbBasis, stochasticK, atr, unmetConditions);
-            } else if (signal === 'WEAK_BUY' || signal === 'WEAK_SELL') {
-                const signalType = signal === 'WEAK_BUY' ? 'BUY' : 'SELL';
-                await this.sendSignalMessage(symbol, signalType, signal, currentPrice, stopLoss, takeProfit, allocation, rsi, adx, bbBasis, stochasticK, atr, unmetConditions);
             }
-            else if (newPair.percentage >= 98) {
+            else if (newPair.percentage >= this.closesPercentageThresholdForPosition) {
                 if (config.strategy.enableTrading) {
-                
+
                     logger.info(`High proximity detected for ${symbol}: ${newPair.percentage}%. Opening position...`);
-                    await this.openNewPosition(symbol, direction === "UPPER" ? "BUY" : "SELL", currentPrice);
+                    await this.openNewPosition(symbol, direction === "UPPER" ? "BUY" : "SELL", currentPrice, atr);
                 }
             }
         } catch (error) {
@@ -356,66 +357,57 @@ class MarketScanner {
     }
 
     updateClosestPairs(newPair) {
-        const { closestPairs } = this;
 
         // Veri doğrulama: Tüm sayısal alanlar kontrol ediliyor
         if (
             typeof newPair.price !== 'number' ||
             typeof newPair.upper !== 'number' ||
             typeof newPair.lower !== 'number' ||
-            typeof newPair.percentage !== 'number'
+            typeof newPair.percentage !== 'number' ||
+            newPair.percentage < this.closesPercentageThreshold
         ) {
             logger.warn(`Invalid data for symbol ${newPair.symbol}:`, newPair);
             return;
         }
 
         // Aynı sembol zaten listede var mı kontrol et
-        const existingPairIndex = closestPairs.findIndex(pair => pair.symbol === newPair.symbol);
+        const existingPairIndex = this.closestPairs.findIndex(pair => pair.symbol === newPair.symbol);
 
         if (existingPairIndex !== -1) {
             // Eğer sembol zaten listede varsa, sadece güncelle
-            if (newPair.percentage > closestPairs[existingPairIndex].percentage) {
-                closestPairs[existingPairIndex] = newPair;
+            if (newPair.percentage > this.closestPairs[existingPairIndex].percentage) {
+                this.closestPairs[existingPairIndex] = newPair;
                 logger.info(`Updated existing pair in closestPairs: ${newPair.symbol}`);
             } else {
                 logger.info(`Skipped updating existing pair in closestPairs: ${newPair.symbol}`);
             }
         } else {
-            // Liste doluysa ve yeni sembol en düşük skorlu sembolden daha iyiyse
-            if (closestPairs.length === 5) {
-                const lowestScorePair = closestPairs.reduce((min, current) =>
-                    current.percentage < min.percentage ? current : min
-                );
-                if (newPair.percentage > lowestScorePair.percentage) {
-                    this.closestPairs = closestPairs.filter(item => item.symbol !== lowestScorePair.symbol);
-                    this.closestPairs.push(newPair);
-                    logger.info(`Replaced lowest score pair with new pair: ${newPair.symbol}`);
-                }
-            } else {
-                // Liste dolu değilse doğrudan ekle
-                this.closestPairs.push(newPair);
-                logger.info(`Added new pair to closestPairs: ${newPair.symbol}`);
-            }
+            this.closestPairs.push(newPair);
+            logger.info(`Added new pair to closestPairs: ${newPair.symbol}`);
         }
-
+        this.closestPairs = this.closestPairs.filter(p => p.percentage >= this.closesPercentageThreshold);
         // Listeyi skora göre sırala (yüksekten düşüğe)
         this.closestPairs.sort((a, b) => b.percentage - a.percentage);
     }
 
     async sendClosestPairsNotification() {
         try {
-            const { closestPairs } = this;
 
-            if (closestPairs.length === 0) {
-                logger.info("No closest pairs to notify.");
+            if (this.closestPairs.length === 0) {
+                logger.info("No pairs with %85+ proximity to notify.");
                 return;
             }
 
-            let message = "📈 En yakın 5 sembol:\n";
+            let message = "📈 %85+ Yakınlıkta Semboller:\n";
 
-            logger.info("Pairs : " + JSON.stringify(closestPairs));
+            // Sadece %90+ olanları sırala
+            const sortedPairs = this.closestPairs
+                .filter(p => p.percentage >= this.closesPercentageThreshold)
+                .sort((a, b) => b.percentage - a.percentage);
 
-            for (const pair of closestPairs) {
+            logger.info("Pairs : " + JSON.stringify(sortedPairs));
+
+            for (const pair of sortedPairs) {
                 const formattedPrice = typeof pair.price === 'number' ? pair.price.toFixed(4) : 'N/A';
                 const formattedUpper = typeof pair.upper === 'number' ? pair.upper.toFixed(4) : 'N/A';
                 const formattedLower = typeof pair.lower === 'number' ? pair.lower.toFixed(4) : 'N/A';
@@ -439,15 +431,10 @@ class MarketScanner {
         }
     }
 
-    async openNewPosition(symbol, signal, entryPrice) {
+    async openNewPosition(symbol, signal, entryPrice, atr) {
         try {
             // 1) Pozisyon boyutunu OrderService ile hesapla
-            const quantity = await this.orderService.calculatePositionSize(
-                symbol,
-                entryPrice,
-                config.strategy.riskPerTrade
-            );
-
+            const quantity = await this.orderService.calculateTurtlePositionSize(symbol, atr);
             // 2) Binance üzerinden pozisyon aç
             await this.binanceService.placeMarketOrder({
                 symbol,
@@ -461,8 +448,12 @@ class MarketScanner {
                 symbol,
                 side: signal,
                 entryPrice,
+
                 isActive: true,
-                units: 1 // Turtle'da artırımlı eklemeler için
+                units: 1,
+                strategy: 'turtle',
+                stopLoss: entryPrice - 2 * atr,
+                takeProfit: entryPrice + 4 * atr
             });
 
             // 4) Yeni pozisyon bildirimi gönder

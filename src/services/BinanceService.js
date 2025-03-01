@@ -46,8 +46,9 @@ class BinanceService {
   /**
    * Timeframe mumlarını alma
    */
-  async getCandles(symbol, interval = '1h', limit = 100) {
+  async getCandles(symbol, interval = '1d', limit = 100) {
     try {
+      
       const candles = await this.client.futuresCandles({ symbol, interval, limit });
 
       const validCandles = candles.map(c => ({
