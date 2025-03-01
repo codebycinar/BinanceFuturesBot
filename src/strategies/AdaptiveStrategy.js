@@ -438,12 +438,12 @@ class AdaptiveStrategy {
     
     // Piyasa koşullarına göre strateji ağırlıklarını güncelle
     updateStrategyWeights(conditions) {
-        // Başlangıçta tüm ağırlıkları sıfırla
+        // Başlangıçta makul varsayılan ağırlıklar belirle
         const weights = {
-            bollinger: 10,
-            momentum: 10,
-            trendFollow: 10,
-            turtle: 10
+            bollinger: 25,  // Daha yüksek varsayılan değer
+            momentum: 25,   // Daha yüksek varsayılan değer
+            trendFollow: 25, // Daha yüksek varsayılan değer
+            turtle: 25      // Daha yüksek varsayılan değer
         };
         
         // 1. Bollinger Strateji Ağırlığı Güncelleme (range'ler için iyi)
@@ -458,7 +458,7 @@ class AdaptiveStrategy {
                 weights.bollinger += 10;
             }
         } else {
-            weights.bollinger -= 10;
+            weights.bollinger -= 5;  // Daha az ceza uygula
         }
         
         // 2. Momentum Strateji Ağırlığı Güncelleme (yüksek volatilite için iyi)
@@ -471,7 +471,7 @@ class AdaptiveStrategy {
                 weights.momentum += 15;
             }
         } else {
-            weights.momentum -= 10;
+            weights.momentum -= 5;  // Daha az ceza uygula
         }
         
         // 3. Trend Takip Stratejisi Ağırlığı Güncelleme
@@ -483,7 +483,7 @@ class AdaptiveStrategy {
                 weights.trendFollow += 15;
             }
         } else {
-            weights.trendFollow -= 15;
+            weights.trendFollow -= 5;  // Daha az ceza uygula
         }
         
         // 4. Turtle Trading Stratejisi Ağırlığı Güncelleme (breakout'lar için ideal)
@@ -499,12 +499,22 @@ class AdaptiveStrategy {
             // Uzun süren range sonrası kırılma olasılığı yüksek
             weights.turtle += 15;
         } else {
-            weights.turtle -= 10;
+            weights.turtle -= 5;  // Daha az ceza uygula
         }
         
-        // Hesaplanan ağırlıkları sınırla (min 0, max 100)
+        // Nötr piyasa koşullarında Bollinger stratejisi biraz daha ağırlık kazansın
+        if (conditions.trend === 'neutral' && conditions.volatility === 'normal') {
+            weights.bollinger += 10;
+        }
+        
+        // Hafif trend varlığında trendFollow biraz artsın
+        if (conditions.trendStrength > 30 && conditions.trendStrength <= 50) {
+            weights.trendFollow += 10;
+        }
+        
+        // Hesaplanan ağırlıkları sınırla (min 5, max 100) - minimum 5 olarak ayarlıyoruz ki hiçbir strateji sıfırlanmasın
         Object.keys(weights).forEach(key => {
-            weights[key] = Math.max(0, Math.min(100, weights[key]));
+            weights[key] = Math.max(5, Math.min(100, weights[key]));
         });
         
         this.strategyWeights = weights;
