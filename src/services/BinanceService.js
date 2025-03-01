@@ -185,10 +185,10 @@ class BinanceService {
         positionSide,
         reduceOnly: true, // Pozisyonu kapatmak için
       };
-      console.log(`Stop Loss emri yerleştiriliyor: ${symbol}`, orderData);
-      return await this.binanceService.client.futuresOrder(orderData);
+      logger.info(`Placing Stop Loss order for ${symbol}:`, orderData);
+      return await this.client.futuresOrder(orderData);
     } catch (error) {
-      console.error(`Stop Loss emri hatası (${symbol}):`, error);
+      logger.error(`Error placing Stop Loss order for ${symbol}:`, error);
       throw error;
     }
   }
@@ -205,10 +205,10 @@ class BinanceService {
         positionSide,
         reduceOnly: true, // Pozisyonu kapatmak için
       };
-      console.log(`Take Profit emri yerleştiriliyor: ${symbol}`, orderData);
-      return await this.binanceService.client.futuresOrder(orderData);
+      logger.info(`Placing Take Profit order for ${symbol}:`, orderData);
+      return await this.client.futuresOrder(orderData);
     } catch (error) {
-      console.error(`Take Profit emri hatası (${symbol}):`, error);
+      logger.error(`Error placing Take Profit order for ${symbol}:`, error);
       throw error;
     }
   }

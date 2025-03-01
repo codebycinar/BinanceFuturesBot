@@ -5,6 +5,7 @@ const OrderService = require('./services/OrderService');
 const MarketScanner = require('./services/MarketScanner');
 const MultiTimeframeService = require('./services/MultiTimeframeService');
 const PerformanceTracker = require('./services/PerformanceTracker');
+const TelegramPositionManagerBot = require('./services/TelegramPositionManagerBot');
 const config = require('./config/config');
 const { Telegraf } = require('telegraf');
 const dotenv = require("dotenv");
@@ -16,10 +17,9 @@ const path = require('path');
     // Load environment variables
     dotenv.config();
     
-    // Initialize Telegram bot
-    const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
-    bot.start((ctx) => ctx.reply('Binance Futures Bot Online!'));
-    bot.launch();
+    // Initialize Telegram Position Manager Bot
+    const telegramBot = new TelegramPositionManagerBot();
+    await telegramBot.initialize();
     
     // Initialize services
     const binanceService = new BinanceService();
