@@ -21,7 +21,7 @@ class AdaptiveStrategy {
         // Initialize different strategies
         this.bollingerStrategy = new BollingerStrategy('BollingerStrategy');
         this.momentumStrategy = new MomentumStrategy();
-        this.trendFollowStrategy = new TrendFollowStrategy();
+        this.trendFollowStrategy = new TrendFollowStrategy(); // Güncellenmiş TrendFollowStrategy sınıfı
         this.turtleStrategy = new TurtleTradingStrategy();
         
         // Market conditions tracking
@@ -51,7 +51,26 @@ class AdaptiveStrategy {
         await this.mtfService.initialize();
         await this.bollingerStrategy.initialize();
         await this.momentumStrategy.initialize();
-        await this.trendFollowStrategy.initialize();
+        
+        try {
+            // Check if TrendFollowStrategy has correct methods
+            if (typeof this.trendFollowStrategy.initialize === 'function') {
+                await this.trendFollowStrategy.initialize();
+                if (typeof this.trendFollowStrategy.generateSignal !== 'function') {
+                    logger.error('TrendFollowStrategy loaded but missing generateSignal method. Will use fallback strategies.');
+                    // Force reload of the strategy
+                    delete require.cache[require.resolve('./TrendFollowStrategy')];
+                    const TrendFollowStrategy = require('./TrendFollowStrategy');
+                    this.trendFollowStrategy = new TrendFollowStrategy();
+                    await this.trendFollowStrategy.initialize();
+                }
+            } else {
+                logger.error('TrendFollowStrategy loaded but missing initialize method. Will use fallback strategies.');
+            }
+        } catch (error) {
+            logger.error(`Error initializing TrendFollowStrategy: ${error.message}`);
+        }
+        
         await this.turtleStrategy.initialize();
         
         logger.info('Adaptive Strategy initialized with all sub-strategies');
@@ -658,7 +677,21 @@ class AdaptiveStrategy {
                     break;
                 
                 case 'trendFollow':
-                    result = await this.trendFollowStrategy.generateSignal(candles, symbol);
+                    try {
+                        if (!this.trendFollowStrategy.generateSignal) {
+                            logger.warn(`TrendFollowStrategy does not have generateSignal method for ${symbol}. Using fallback.`);
+                            // Fallback to safer strategy if the method doesn't exist
+                            result = await this.bollingerStrategy.generateSignal(candles, symbol);
+                            strategyName = 'bollinger'; // Change the strategy name for reporting
+                        } else {
+                            result = await this.trendFollowStrategy.generateSignal(candles, symbol);
+                        }
+                    } catch (e) {
+                        logger.error(`Error with TrendFollowStrategy for ${symbol}: ${e.message}`);
+                        // Fallback to safer strategy
+                        result = await this.bollingerStrategy.generateSignal(candles, symbol);
+                        strategyName = 'bollinger'; // Change the strategy name for reporting
+                    }
                     break;
                     
                 case 'turtle':
