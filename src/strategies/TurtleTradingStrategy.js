@@ -12,6 +12,8 @@ class TurtleTradingStrategy {
             atrPeriod: 14,       // ATR periyodu
             riskPercentage: 1,   // Risk yüzdesi
             atrMultiplier: 2,    // Stop loss için ATR çarpanı
+            confirmationPeriod: 3, // En az 3 mum gerekli kırılma doğrulaması için
+            profitMultiplier: 3   // Risk:Ödül oranını 1:3'e çıkardık
         };
     }
     
@@ -31,7 +33,7 @@ class TurtleTradingStrategy {
     
     async generateSignal(candles, symbol) {
         try {
-            if (!candles || candles.length < this.parameters.entryChannel + 5) {
+            if (!candles || candles.length < this.parameters.entryChannel + 10) {
                 logger.warn(`Not enough candles for ${symbol} to generate Turtle Trading signal`);
                 return { signal: 'NEUTRAL' };
             }
@@ -43,13 +45,49 @@ class TurtleTradingStrategy {
             // ATR hesapla
             const atr = this.calculateATR(candles, this.parameters.atrPeriod);
             
-            // Son fiyat
+            // Trend analizi için basit bir hareketli ortalama
+            const sma50 = this.calculateSMA(candles, 50);
+            const sma200 = this.calculateSMA(candles, 200);
+            
+            // Son fiyatlar
             const currentPrice = parseFloat(candles[candles.length - 1].close);
             const previousPrice = parseFloat(candles[candles.length - 2].close);
+            const isUptrend = currentPrice > sma50 && sma50 > sma200;
+            const isDowntrend = currentPrice < sma50 && sma50 < sma200;
             
-            // Kırılma sinyalleri için kontrol
-            const breakoutHigh = previousPrice <= entryDonchian.upper && currentPrice > entryDonchian.upper;
-            const breakoutLow = previousPrice >= entryDonchian.lower && currentPrice < entryDonchian.lower;
+            // Kırılma sinyalleri için gelişmiş kontrol
+            let breakoutHigh = false;
+            let breakoutLow = false;
+            
+            // Kırılmanın doğrulanması için son birkaç mum kontrolü
+            const confirmationPeriod = this.parameters.confirmationPeriod;
+            
+            // Yukarı kırılma kontrolü - birden fazla mum kırılma üstünde olmalı
+            if (previousPrice <= entryDonchian.upper && currentPrice > entryDonchian.upper) {
+                // Son mumların kaç tanesi yüksek seviyeye yakın kapanmış?
+                let highCloseCount = 0;
+                for (let i = candles.length - confirmationPeriod; i < candles.length; i++) {
+                    if (parseFloat(candles[i].close) > entryDonchian.upper * 0.99) {
+                        highCloseCount++;
+                    }
+                }
+                breakoutHigh = highCloseCount >= confirmationPeriod / 2;
+            }
+            
+            // Aşağı kırılma kontrolü - birden fazla mum kırılma altında olmalı
+            if (previousPrice >= entryDonchian.lower && currentPrice < entryDonchian.lower) {
+                // Son mumların kaç tanesi düşük seviyeye yakın kapanmış?
+                let lowCloseCount = 0;
+                for (let i = candles.length - confirmationPeriod; i < candles.length; i++) {
+                    if (parseFloat(candles[i].close) < entryDonchian.lower * 1.01) {
+                        lowCloseCount++;
+                    }
+                }
+                breakoutLow = lowCloseCount >= confirmationPeriod / 2;
+            }
+            
+            // Hacim doğrulaması ekle
+            const volumeConfirmation = this.checkVolumeConfirmation(candles);
             
             // Çıkış sinyalleri için kontrol
             const exitLong = currentPrice < exitDonchian.lower;
@@ -67,35 +105,75 @@ class TurtleTradingStrategy {
             // Turtle Trading'e göre stop loss ve take profit hesaplama
             let stopLoss, takeProfit;
             let signal = 'NEUTRAL';
+            let unmetConditions = [];
             
-            if (breakoutHigh) {
-                // Long pozisyon sinyali
-                signal = 'BUY';
-                stopLoss = currentPrice - (atr * this.parameters.atrMultiplier);
-                takeProfit = currentPrice + (atr * this.parameters.atrMultiplier * 2); // 2:1 risk-reward
-                
-                logger.info(`Turtle Trading LONG signal for ${symbol} at ${currentPrice}`);
-                logger.info(`Donchian Upper Breakout: ${entryDonchian.upper}`);
-            } else if (breakoutLow) {
-                // Short pozisyon sinyali
-                signal = 'SELL';
-                stopLoss = currentPrice + (atr * this.parameters.atrMultiplier);
-                takeProfit = currentPrice - (atr * this.parameters.atrMultiplier * 2); // 2:1 risk-reward
-                
-                logger.info(`Turtle Trading SHORT signal for ${symbol} at ${currentPrice}`);
-                logger.info(`Donchian Lower Breakout: ${entryDonchian.lower}`);
+            // Trend ile uyumlu işlemleri tercih et
+            if (breakoutHigh && volumeConfirmation) {
+                if (isUptrend) {
+                    // Long pozisyon sinyali
+                    signal = 'BUY';
+                    stopLoss = currentPrice - (atr * this.parameters.atrMultiplier);
+                    // Risk:Ödül oranını 1:3'e yükselttik
+                    takeProfit = currentPrice + (atr * this.parameters.atrMultiplier * this.parameters.profitMultiplier);
+                    
+                    logger.info(`Turtle Trading LONG signal for ${symbol} at ${currentPrice}`);
+                    logger.info(`Donchian Upper Breakout: ${entryDonchian.upper} with volume confirmation`);
+                } else {
+                    // Trend ile uyumlu değil, zayıf sinyal
+                    signal = 'WEAK_BUY';
+                    stopLoss = currentPrice - (atr * this.parameters.atrMultiplier);
+                    takeProfit = currentPrice + (atr * this.parameters.atrMultiplier * this.parameters.profitMultiplier);
+                    unmetConditions.push('Trend not confirmed (price below SMA50/SMA200)');
+                }
+            } else if (breakoutLow && volumeConfirmation) {
+                if (isDowntrend) {
+                    // Short pozisyon sinyali
+                    signal = 'SELL';
+                    stopLoss = currentPrice + (atr * this.parameters.atrMultiplier);
+                    // Risk:Ödül oranını 1:3'e yükselttik
+                    takeProfit = currentPrice - (atr * this.parameters.atrMultiplier * this.parameters.profitMultiplier);
+                    
+                    logger.info(`Turtle Trading SHORT signal for ${symbol} at ${currentPrice}`);
+                    logger.info(`Donchian Lower Breakout: ${entryDonchian.lower} with volume confirmation`);
+                } else {
+                    // Trend ile uyumlu değil, zayıf sinyal
+                    signal = 'WEAK_SELL';
+                    stopLoss = currentPrice + (atr * this.parameters.atrMultiplier);
+                    takeProfit = currentPrice - (atr * this.parameters.atrMultiplier * this.parameters.profitMultiplier);
+                    unmetConditions.push('Trend not confirmed (price above SMA50/SMA200)');
+                }
+            } else if (breakoutHigh || breakoutLow) {
+                // Hacim doğrulaması eksik
+                signal = breakoutHigh ? 'WEAK_BUY' : 'WEAK_SELL';
+                if (breakoutHigh) {
+                    stopLoss = currentPrice - (atr * this.parameters.atrMultiplier);
+                    takeProfit = currentPrice + (atr * this.parameters.atrMultiplier * this.parameters.profitMultiplier);
+                } else {
+                    stopLoss = currentPrice + (atr * this.parameters.atrMultiplier);
+                    takeProfit = currentPrice - (atr * this.parameters.atrMultiplier * this.parameters.profitMultiplier);
+                }
+                unmetConditions.push('Volume confirmation missing');
             }
             
+            // Ek piyasa bilgilerini hesapla
+            const volatility = (atr / currentPrice) * 100; // Yüzde olarak volatilite
+            const averageVolume = this.calculateAverageVolume(candles, 20);
+            const currentVolume = parseFloat(candles[candles.length - 1].volume);
+            const volumeRatio = currentVolume / averageVolume;
+            
             // Sonuçları logla
-            logger.info(`Turtle Trading scan for ${symbol}:
+            logger.info(`Enhanced Turtle Trading scan for ${symbol}:
                 - Current Price: ${currentPrice}
                 - Entry Donchian: Upper=${entryDonchian.upper}, Lower=${entryDonchian.lower}
                 - Exit Donchian: Upper=${exitDonchian.upper}, Lower=${exitDonchian.lower}
-                - ATR: ${atr}
+                - ATR: ${atr} (${volatility.toFixed(2)}%)
+                - Volume Ratio: ${volumeRatio.toFixed(2)}
+                - Trend: ${isUptrend ? 'UP' : isDowntrend ? 'DOWN' : 'NEUTRAL'}
                 - Signal: ${signal}
                 - Stop Loss: ${stopLoss}
                 - Take Profit: ${takeProfit}
                 - Allocation: ${allocation}
+                - Unmet Conditions: ${unmetConditions.join(', ') || 'None'}
             `);
             
             return { 
@@ -103,16 +181,60 @@ class TurtleTradingStrategy {
                 stopLoss, 
                 takeProfit, 
                 allocation,
+                unmetConditions: unmetConditions.join(', '),
                 indicators: {
                     entryDonchian,
                     exitDonchian,
-                    atr
+                    atr,
+                    volatility,
+                    volumeRatio,
+                    trend: isUptrend ? 'UP' : isDowntrend ? 'DOWN' : 'NEUTRAL'
                 }
             };
             
         } catch (error) {
             logger.error(`Error generating Turtle Trading signal for ${symbol}:`, error);
             return { signal: 'NEUTRAL' };
+        }
+    }
+    
+    // Basit bir SMA hesaplayıcı
+    calculateSMA(candles, period) {
+        if (candles.length < period) return null;
+        
+        const closes = candles.slice(-period).map(c => parseFloat(c.close));
+        const sum = closes.reduce((total, price) => total + price, 0);
+        return sum / period;
+    }
+    
+    // Hacim doğrulaması kontrolü
+    checkVolumeConfirmation(candles) {
+        try {
+            // Son 20 mumun hacim ortalaması
+            const volumes = candles.slice(-20).map(c => parseFloat(c.volume));
+            const avgVolume = volumes.slice(0, -1).reduce((sum, vol) => sum + vol, 0) / (volumes.length - 1);
+            
+            // Son mumun hacmi
+            const lastVolume = volumes[volumes.length - 1];
+            
+            // Son hacim ortalamanın 1.5 katından büyükse doğrula
+            return lastVolume > avgVolume * 1.5;
+        } catch (error) {
+            logger.error('Error checking volume confirmation:', error);
+            return false;
+        }
+    }
+    
+    // Ortalama hacim hesaplama
+    calculateAverageVolume(candles, period) {
+        try {
+            if (candles.length < period) return 0;
+            
+            const volumes = candles.slice(-period).map(c => parseFloat(c.volume));
+            return volumes.reduce((sum, vol) => sum + vol, 0) / volumes.length;
+        } catch (error) {
+            logger.error('Error calculating average volume:', error);
+            return 0;
         }
     }
     

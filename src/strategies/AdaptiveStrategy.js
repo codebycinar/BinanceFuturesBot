@@ -38,12 +38,12 @@ class AdaptiveStrategy {
         
         this.parameters = config.strategy;
         
-        // Strategy selection weights - higher values make that strategy more likely to be selected
+        // Strategy selection weights - Turtle stratejisine daha yüksek başlangıç değeri
         this.strategyWeights = {
-            bollinger: 10,       // default weight
-            momentum: 10,        // default weight
-            trendFollow: 10,     // default weight
-            turtle: 10           // default weight
+            bollinger: 15,       // Yükseltildi
+            momentum: 15,        // Yükseltildi
+            trendFollow: 20,     // Yükseltildi
+            turtle: 50           // Çok daha yüksek başlangıç değeri
         };
     }
     
@@ -438,17 +438,17 @@ class AdaptiveStrategy {
     
     // Piyasa koşullarına göre strateji ağırlıklarını güncelle
     updateStrategyWeights(conditions) {
-        // Başlangıçta makul varsayılan ağırlıklar belirle
+        // Başlangıçta makul varsayılan ağırlıklar belirle - Turtle stratejisine önemli ölçüde yüksek değer
         const weights = {
-            bollinger: 25,  // Daha yüksek varsayılan değer
-            momentum: 25,   // Daha yüksek varsayılan değer
-            trendFollow: 25, // Daha yüksek varsayılan değer
-            turtle: 25      // Daha yüksek varsayılan değer
+            bollinger: 15,   // Daha düşük varsayılan değer
+            momentum: 15,    // Daha düşük varsayılan değer
+            trendFollow: 20, // Daha düşük varsayılan değer
+            turtle: 50       // Turtle stratejisi için çok daha yüksek varsayılan değer
         };
         
         // 1. Bollinger Strateji Ağırlığı Güncelleme (range'ler için iyi)
         if (conditions.marketType === 'ranging') {
-            weights.bollinger += 30;
+            weights.bollinger += 25;
             
             // Range uzunluğu arttıkça bollinger stratejisinin ağırlığı artar
             if (conditions.rangeLength > 5) {
@@ -499,7 +499,13 @@ class AdaptiveStrategy {
             // Uzun süren range sonrası kırılma olasılığı yüksek
             weights.turtle += 15;
         } else {
-            weights.turtle -= 5;  // Daha az ceza uygula
+            // Turtle stratejisi için daha az ceza uygula, minimum değer korunsun
+            weights.turtle -= 3;  
+        }
+        
+        // Türkiye ve gelişmekte olan piyasalar için de Turtle iyi olabilir
+        if (conditions.volume === 'high') {
+            weights.turtle += 15;
         }
         
         // Nötr piyasa koşullarında Bollinger stratejisi biraz daha ağırlık kazansın
@@ -527,25 +533,44 @@ class AdaptiveStrategy {
         
         // Direkt kural tabanlı seçim (öncelikli durumlar)
         
-        // 1. Kırılma durumunda Turtle Trading
+        // 1. Kırılma durumunda Turtle Trading (Bu koşul en yüksek öncelikli)
         if (breakout) {
             logger.info('Strategy Selection: Turtle Trading selected due to price breakout');
             return 'turtle';
         }
         
-        // 2. Güçlü trend varsa Trend Takip
+        // 2. Yüksek hacim durumunda da Turtle (kripto paraların ani hareketlerini yakalamak için)
+        if (this.marketConditions.volume === 'high' && volatility !== 'low') {
+            logger.info('Strategy Selection: Turtle Trading selected due to high volume');
+            return 'turtle';
+        }
+        
+        // 3. Uzun süreli bir range'den sonra Turtle (kırılma olasılığı için)
+        if (this.marketConditions.rangeLength > 14) {
+            logger.info('Strategy Selection: Turtle Trading selected due to potential breakout after long range');
+            return 'turtle'; 
+        }
+        
+        // 4. Volatilite artış eğilimi Turtle için uygun (kırılma hazırlığı)
+        if (this.marketConditions.volatilityChange === 'increasing-fast' || 
+            this.marketConditions.volatilityChange === 'increasing') {
+            logger.info('Strategy Selection: Turtle Trading selected due to increasing volatility');
+            return 'turtle';
+        }
+        
+        // 5. Güçlü trend varsa Trend Takip
         if (marketType === 'trending' && trendStrength > 75) {
             logger.info('Strategy Selection: Trend Follow selected due to strong trend');
             return 'trendFollow';
         }
         
-        // 3. Kesin yatay piyasa Bollinger
+        // 6. Kesin yatay piyasa Bollinger
         if (marketType === 'ranging' && this.marketConditions.rangeLength > 12) {
             logger.info('Strategy Selection: Bollinger selected due to established range market');
             return 'bollinger';
         }
         
-        // 4. Çok yüksek volatilite momentum
+        // 7. Çok yüksek volatilite momentum
         if (volatility === 'high' && 
             (this.marketConditions.volatilityChange === 'increasing-fast')) {
             logger.info('Strategy Selection: Momentum selected due to rapidly increasing volatility');
@@ -553,18 +578,32 @@ class AdaptiveStrategy {
         }
         
         // Ağırlık tabanlı istatistiksel seçim
-        // En yüksek ağırlığa sahip stratejiyi seç
+        // En yüksek ağırlığa sahip stratejiyi seç, ancak ağırlıklar arasında fark çok düşükse Turtle tercih et
         let highestWeight = 0;
-        let selectedStrategy = 'bollinger'; // Varsayılan
+        let secondHighestWeight = 0;
+        let selectedStrategy = 'turtle'; // Varsayılan değer değiştirildi
+        let secondStrategy = '';
         
         Object.entries(this.strategyWeights).forEach(([strategy, weight]) => {
             if (weight > highestWeight) {
+                secondHighestWeight = highestWeight;
+                secondStrategy = selectedStrategy;
                 highestWeight = weight;
                 selectedStrategy = strategy;
+            } else if (weight > secondHighestWeight) {
+                secondHighestWeight = weight;
+                secondStrategy = strategy;
             }
         });
         
+        // Eğer en yüksek ağırlıklı 2 strateji arasındaki fark az ise ve ikinci strateji Turtle ise, Turtle'ı seç
+        if (highestWeight - secondHighestWeight < 10 && secondStrategy === 'turtle') {
+            selectedStrategy = 'turtle';
+            logger.info(`Strategy Selection: Turtle chosen due to close weight with ${secondHighestWeight} vs ${highestWeight}`);
+        }
+        
         logger.info(`Strategy Selection: Selected ${selectedStrategy} with weight ${highestWeight} based on market conditions`);
+        logger.info(`Strategy weights: ${JSON.stringify(this.strategyWeights)}`);
         return selectedStrategy;
     }
     
@@ -574,27 +613,31 @@ class AdaptiveStrategy {
             let candles;
             const timeframes = mtfData.candles;
             
-            // Her strateji için ideal timeframe seçimi
+            // Her strateji için ideal timeframe seçimi - daha uzun zaman dilimlerini tercih ediyoruz
             switch (strategyName) {
                 case 'turtle':
-                    // Turtle Trading için günlük chart daha uygun
-                    candles = await this.binanceService.getCandles(symbol, '1d', 50); // Daha fazla günlük veri
+                    // Turtle Trading için günlük chart 
+                    candles = await this.binanceService.getCandles(symbol, '1d', 60); // Donchian kanalları için daha fazla günlük veri
+                    logger.info(`Using 1d timeframe for Turtle Trading Strategy (${symbol})`);
                     break;
                     
                 case 'trendFollow':
-                    // Trend stratejisi için 4h timeframe
-                    candles = timeframes['4h'] || timeframes['1h'];
+                    // Trend stratejisi için 4h-1d timeframe
+                    candles = timeframes['1d'] || timeframes['4h'] || timeframes['1h'];
+                    logger.info(`Using ${candles === timeframes['1d'] ? '1d' : candles === timeframes['4h'] ? '4h' : '1h'} timeframe for Trend Follow Strategy (${symbol})`);
                     break;
                     
                 case 'momentum':
-                    // Momentum stratejisi için 1h veya 15m
-                    candles = timeframes['1h'] || timeframes['15m'];
+                    // Momentum stratejisi için 1h veya 4h - 15m'den çıkartılıp 4h eklendi
+                    candles = timeframes['4h'] || timeframes['1h'];
+                    logger.info(`Using ${candles === timeframes['4h'] ? '4h' : '1h'} timeframe for Momentum Strategy (${symbol})`);
                     break;
                     
                 case 'bollinger':
                 default:
-                    // Bollinger Bands için 1h ideal
-                    candles = timeframes['1h'];
+                    // Bollinger Bands için 4h veya 1h 
+                    candles = timeframes['4h'] || timeframes['1h'];
+                    logger.info(`Using ${candles === timeframes['4h'] ? '4h' : '1h'} timeframe for Bollinger Strategy (${symbol})`);
                     break;
             }
             

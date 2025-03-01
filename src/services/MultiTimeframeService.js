@@ -6,7 +6,7 @@ const ti = require('technicalindicators');
 class MultiTimeframeService {
     constructor(binanceService) {
         this.binanceService = binanceService;
-        this.timeframes = ['5m', '15m', '1h', '4h'];
+        this.timeframes = ['1h', '4h', '1d']; // Daha uzun zaman dilimlerine odaklanıyoruz
     }
 
     async initialize() {
