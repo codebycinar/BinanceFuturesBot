@@ -33,8 +33,8 @@ class TelegramPositionManagerBot {
             await this.bot.launch();
             logger.info('Telegram Position Manager Bot started');
             
-            // Başlangıçta pozisyon takibi izni sorusu
-            this.askForTrackingPermission();
+            // Başlangıçta bilgi mesajı gönder, ancak izin sorma
+            this.sendInitialMessage();
             
             return true;
         } catch (error) {
@@ -231,10 +231,16 @@ ${totalPnl >= 0 ? '✅' : '❌'} Total PnL: ${totalPnl.toFixed(2)} USDT
                 return;
             }
             
-            await ctx.reply(`Started tracking ${symbol} position. You will receive updates on significant price movements.`);
+            // Kullanıcıya izleme onayı sor - her pozisyon için ayrı onay almak için
+            await ctx.reply(`Do you want to track ${symbol} position? Reply with YES or NO.`);
             
-            // İzleme listesine ekle (burada uygulama özelinde farklı bir yapı kullanılabilir)
-            this.trackPosition(position);
+            // İzleme onay bekleme durumuna geç
+            this.pendingTrack = {
+                symbol,
+                positionId: position.id,
+                userId: ctx.message.from.id,
+                chatId: ctx.chat.id
+            };
             
         } catch (error) {
             logger.error(`Error handling track command: ${error.message}`);
@@ -263,15 +269,31 @@ ${totalPnl >= 0 ? '✅' : '❌'} Total PnL: ${totalPnl.toFixed(2)} USDT
         }
     }
 
-    // Tüm pozisyonları otomatik izle
+    // Tüm pozisyonları otomatik izle - bunu tek bir pozisyonu izleme işlevi olarak değiştirelim
     async handleTrackAll(ctx) {
         try {
-            this.autoTrackPositions = true;
-            await ctx.reply('Auto-tracking enabled for all positions. You will receive updates on all positions.');
+            // Tüm aktif pozisyonları getir
+            const positions = await Position.findAll({ where: { isActive: true } });
+            
+            if (positions.length === 0) {
+                await ctx.reply('No active positions found to track.');
+                return;
+            }
+            
+            // Tüm aktif pozisyonları listele ve kullanıcıya birini seçmesini söyle
+            let message = 'Choose a position to track by using the /track command with one of these symbols:\n\n';
+            
+            positions.forEach(position => {
+                message += `- ${position.symbol}\n`;
+            });
+            
+            message += '\nExample: /track BTCUSDT';
+            
+            await ctx.reply(message);
             
         } catch (error) {
             logger.error(`Error handling trackall command: ${error.message}`);
-            await ctx.reply('Error enabling auto-tracking. Please try again later.');
+            await ctx.reply('Error getting positions to track. Please try again later.');
         }
     }
 
@@ -308,26 +330,36 @@ ${totalPnl >= 0 ? '✅' : '❌'} Total PnL: ${totalPnl.toFixed(2)} USDT
                 this.pendingClose = null;
             }
         }
-        // Başlangıç izin yanıtı
-        else if ((text === 'YES' || text === 'NO') && this.pendingTrackingPermission) {
+        // Track onayı
+        else if ((text === 'YES' || text === 'NO') && this.pendingTrack) {
             if (text === 'YES') {
-                this.autoTrackPositions = true;
-                await ctx.reply('Auto-tracking enabled for all positions. You will receive updates on new and existing positions.');
+                try {
+                    // Pozisyon izlemeye başla
+                    const position = await Position.findByPk(this.pendingTrack.positionId);
+                    if (position && position.isActive) {
+                        this.trackPosition(position);
+                        await ctx.reply(`Started tracking ${position.symbol} position. You will receive updates on significant price movements.`);
+                    } else {
+                        await ctx.reply(`Position no longer active for ${this.pendingTrack.symbol}.`);
+                    }
+                } catch (error) {
+                    logger.error(`Error tracking position: ${error.message}`);
+                    await ctx.reply(`Error tracking position for ${this.pendingTrack.symbol}.`);
+                }
             } else {
-                await ctx.reply('Auto-tracking disabled. You can manually track positions using /track [symbol] or enable auto-tracking with /trackall.');
+                await ctx.reply(`Tracking cancelled for ${this.pendingTrack.symbol}.`);
             }
-            this.pendingTrackingPermission = false;
+            this.pendingTrack = null;
         }
     }
 
-    // Pozisyon izleme başlangıç izni sor
-    async askForTrackingPermission() {
+    // Başlangıç bilgi mesajı gönder
+    async sendInitialMessage() {
         try {
-            this.pendingTrackingPermission = true;
             await this.bot.telegram.sendMessage(this.chatId, 
-                'Do you want to automatically track all open positions? Reply with YES or NO.');
+                `Binance Futures Bot started! 🚀\n\nUse /help to see available commands.\nUse /track [symbol] to track specific positions.`);
         } catch (error) {
-            logger.error(`Error asking for tracking permission: ${error.message}`);
+            logger.error(`Error sending initial message: ${error.message}`);
         }
     }
 
