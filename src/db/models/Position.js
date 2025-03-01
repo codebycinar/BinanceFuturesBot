@@ -43,6 +43,49 @@ module.exports = (sequelize, DataTypes) => {
             type: DataTypes.FLOAT,
             allowNull: true,
         },
+        closedPrice: {
+            type: DataTypes.FLOAT,
+            allowNull: true,
+        },
+        closedAt: {
+            type: DataTypes.DATE,
+            allowNull: true,
+        },
+        exitReason: {
+            type: DataTypes.STRING,
+            allowNull: true,
+        },
+        strategyUsed: {
+            type: DataTypes.STRING,
+            allowNull: true,
+            defaultValue: 'Adaptive Strategy',
+        },
+        marketConditions: {
+            type: DataTypes.TEXT,
+            allowNull: true,
+            defaultValue: '{}',
+            get() {
+                const value = this.getDataValue('marketConditions');
+                return value ? JSON.parse(value) : {};
+            },
+            set(value) {
+                this.setDataValue('marketConditions', JSON.stringify(value));
+            },
+        },
+        pnlPercent: {
+            type: DataTypes.FLOAT,
+            allowNull: true,
+        },
+        pnlAmount: {
+            type: DataTypes.FLOAT,
+            allowNull: true,
+        },
+        holdTime: {
+            type: DataTypes.INTEGER,
+            allowNull: true,
+            defaultValue: 0,
+            comment: 'Position hold time in minutes',
+        },
     });
     return Position;
 };

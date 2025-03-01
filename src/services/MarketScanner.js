@@ -1,6 +1,6 @@
 // services/MarketScanner.js
 
-const BollingerStrategy = require('../strategies/BollingerStrategy');
+const AdaptiveStrategy = require('../strategies/AdaptiveStrategy');
 const config = require('../config/config');
 const logger = require('../utils/logger');
 const { models } = require('../db/db');
@@ -12,19 +12,26 @@ const chatId = process.env.TELEGRAM_CHAT_ID;
 
 const BinanceService = require('../services/BinanceService');
 const OrderService = require('../services/OrderService');
+const MultiTimeframeService = require('../services/MultiTimeframeService');
+const EnhancedPositionManager = require('../services/EnhancedPositionManager');
 
 (async () => {
     try {
         dotenv.config();
-        bot.start((ctx) => ctx.reply('Merhaba!'));
+        bot.start((ctx) => ctx.reply('Binance Futures Bot Online!'));
         bot.launch();
+        
         const binanceService = new BinanceService();
         await binanceService.initialize();
 
         const orderService = new OrderService(binanceService);
-        const marketScanner = new MarketScanner(binanceService, orderService);
+        const mtfService = new MultiTimeframeService(binanceService);
+        await mtfService.initialize();
+        
+        const marketScanner = new MarketScanner(binanceService, orderService, mtfService);
+        await marketScanner.initialize();
 
-        logger.info('Market Scanner started.');
+        logger.info('Market Scanner started with Adaptive Strategy and Multi-Timeframe Analysis.');
 
         // Market taramasını başlat
         await marketScanner.scanAllSymbols();
@@ -44,13 +51,20 @@ const OrderService = require('../services/OrderService');
 })();
 
 class MarketScanner {
-    constructor(binanceService, orderService) {
+    constructor(binanceService, orderService, mtfService) {
         this.binanceService = binanceService;
         this.orderService = orderService;
-        this.strategy = new BollingerStrategy('BollingerStrategy');
+        this.mtfService = mtfService;
+        this.strategy = new AdaptiveStrategy(binanceService);
         this.positionStates = {};
         this.weakSignalBuffer = []; // Zayıf sinyalleri gruplamak için buffer
         this.weakSignalBatchSize = 5; // Her mesajda kaç sinyal birleştirileceği
+        this.lastMarketConditions = {}; // Market koşullarını izlemek için
+    }
+    
+    async initialize() {
+        await this.strategy.initialize();
+        logger.info('Market Scanner initialized with Adaptive Strategy');
     }
 
     /**
@@ -74,13 +88,16 @@ class MarketScanner {
         }
     }
 
-    async sendWeakSignalMessage(symbol, signalType, entryPrice, stopLoss, takeProfit, allocation, unmetConditions) {
+    async sendWeakSignalMessage(symbol, signalType, entryPrice, stopLoss, takeProfit, allocation, unmetConditions, strategyUsed) {
         const message = `
-    ⚠️ Weak ${signalType} signal detected for ${symbol}.
+    ⚠️ Weak ${signalType} signal detected for ${symbol}
     - Entry Price: ${entryPrice}
     - Stop Loss: ${stopLoss}
     - Take Profit: ${takeProfit}
     - Allocation: ${allocation}
+    - Strategy: ${strategyUsed || 'Adaptive Strategy'}
+    - Market Type: ${this.lastMarketConditions[symbol]?.marketType || 'Unknown'}
+    - Trend: ${this.lastMarketConditions[symbol]?.trend || 'Unknown'}
     - Unmet Conditions: ${unmetConditions}
     ⚠️ No position opened.
     `;
@@ -115,12 +132,18 @@ class MarketScanner {
     /**
      * Yeni pozisyon açıldığında mesaj gönderir.
      */
-    async notifyNewPosition(symbol, allocation, stopLoss, takeProfit) {
+    async notifyNewPosition(symbol, allocation, stopLoss, takeProfit, strategyUsed) {
+        const marketConditions = this.lastMarketConditions[symbol] || {};
+        
         const message = `
     ✅ New position opened for ${symbol}:
     - Allocation: ${allocation} USDT
     - Stop Loss: ${stopLoss}
     - Take Profit: ${takeProfit}
+    - Strategy: ${strategyUsed || 'Adaptive Strategy'}
+    - Market Type: ${marketConditions.marketType || 'Unknown'}
+    - Trend: ${marketConditions.trend || 'Unknown'} (Strength: ${marketConditions.trendStrength || 'Unknown'}%)
+    - Volatility: ${marketConditions.volatility || 'Unknown'}
     `;
 
         try {
@@ -199,6 +222,7 @@ class MarketScanner {
      */
     /**
   * Belirli bir sembolü tarar ve pozisyon açma işlemlerini gerçekleştirir.
+  * Çoklu zaman çerçevesi analizi ve adaptif strateji kullanır.
   */
     async scanSymbol(symbol) {
         try {
@@ -206,27 +230,13 @@ class MarketScanner {
                 throw new Error('Binance service is not defined');
             }
 
-            logger.info(`\n=== Scanning ${symbol} ===`, { timestamp: new Date().toISOString() });
-
-            if (!config.strategy) {
-                throw new Error('Strategy is not initialized');
-            }
-
-            const timeframe = config.strategy.timeframe || '1h';
-            const limit = config.strategy.limit || 100;
-            const candles = await this.binanceService.getCandles(symbol, timeframe, limit);
-
-            if (!candles || candles.length === 0) {
-                logger.warn(`No candles fetched for ${symbol}. Skipping.`);
-                return;
-            }
+            logger.info(`\n=== Scanning ${symbol} with Multi-Timeframe Analysis ===`, { timestamp: new Date().toISOString() });
 
             // Açık pozisyon kontrolü
             let position = await Position.findOne({ where: { symbol, isActive: true } });
             if (position) {
-                logger.info(`Active position found for ${symbol}. Managing position.`);
-                await this.managePosition(position, candles);
-                return;
+                logger.info(`Active position found for ${symbol}. Using EnhancedPositionManager.`);
+                return; // EnhancedPositionManager handles position management separately
             }
 
             // Açık pozisyon sayısını kontrol et
@@ -238,8 +248,31 @@ class MarketScanner {
                 return;
             }
 
-            // Yeni sinyal üretme
-            const { signal, stopLoss, takeProfit, allocation, unmetConditions } = await this.strategy.generateSignal(candles, symbol);
+            // Multi-timeframe data alma
+            const mtfData = await this.mtfService.getMultiTimeframeData(symbol);
+            
+            // Hourly candles for signal generation (legacy compatibility)
+            const candles = mtfData.candles['1h'];
+            if (!candles || candles.length === 0) {
+                logger.warn(`No candles fetched for ${symbol}. Skipping.`);
+                return;
+            }
+            
+            // Market koşullarını analiz et
+            const marketConditions = await this.strategy.analyzeMarketConditions(mtfData, symbol);
+            this.lastMarketConditions[symbol] = marketConditions;
+            
+            // Log market conditions
+            logger.info(`Market conditions for ${symbol}: 
+                - Trend: ${marketConditions.trend} (Strength: ${marketConditions.trendStrength}%)
+                - Volatility: ${marketConditions.volatility}
+                - Market Type: ${marketConditions.marketType}
+                - Volume: ${marketConditions.volume}
+            `);
+            
+            // Yeni sinyal üretme (Adaptif Strateji)
+            const { signal, stopLoss, takeProfit, allocation, unmetConditions, strategyUsed } = 
+                await this.strategy.generateSignal(candles, symbol);
 
             if (signal === 'NEUTRAL') {
                 logger.info(`No actionable signal for ${symbol}.`);
@@ -250,10 +283,19 @@ class MarketScanner {
             const currentPrice = candles[candles.length - 1].close;
 
             if (signal === 'BUY' || signal === 'SELL') {
-                await this.openNewPosition(symbol, signal, currentPrice, stopLoss, takeProfit, allocation);
+                await this.openNewPosition(symbol, signal, currentPrice, stopLoss, takeProfit, allocation, strategyUsed);
             } else if (signal === 'WEAK_BUY' || signal === 'WEAK_SELL') {
                 const signalType = signal === 'WEAK_BUY' ? 'BUY' : 'SELL';
-                await this.sendWeakSignalMessage(symbol, signalType, currentPrice, stopLoss, takeProfit, allocation, unmetConditions);
+                await this.sendWeakSignalMessage(
+                    symbol, 
+                    signalType, 
+                    currentPrice, 
+                    stopLoss, 
+                    takeProfit, 
+                    allocation, 
+                    unmetConditions,
+                    strategyUsed
+                );
             }
         } catch (error) {
             logger.error(`Error scanning symbol ${symbol}: ${error.message || JSON.stringify(error)}`);
@@ -347,15 +389,28 @@ class MarketScanner {
         const ms = timeframes[timeframe] || 60 * 60 * 1000;
         return new Date(Math.ceil(now.getTime() / ms) * ms);
     }
-    async openNewPosition(symbol, signal, entryPrice, stopLoss, takeProfit) {
-        const allocation = config.calculate_position_size
+    async openNewPosition(symbol, signal, entryPrice, stopLoss, takeProfit, allocation, strategyUsed) {
+        // Calculate position size
+        const positionSize = config.calculate_position_size
             ? config.riskPerTrade * await this.binanceService.getFuturesBalance()
-            : config.static_position_size;
+            : allocation || config.static_position_size;
 
-        const quantity = await this.orderService.calculateStaticPositionSize(symbol);
+        // Calculate quantity based on allocation
+        const quantity = await this.orderService.calculateStaticPositionSize(symbol, positionSize);
 
-        logger.info(`Opening position for ${symbol}: Entry Price=${entryPrice}, Signal=${signal}, Quantity=${quantity}, Allocation=${allocation} USDT, Stop Loss=${stopLoss}, Take Profit=${takeProfit}`);
+        // Log the position opening
+        logger.info(`Opening position for ${symbol}: 
+            - Entry Price: ${entryPrice}
+            - Signal: ${signal}
+            - Strategy Used: ${strategyUsed || 'Adaptive Strategy'}
+            - Market Conditions: ${JSON.stringify(this.lastMarketConditions[symbol] || {})}
+            - Quantity: ${quantity}
+            - Allocation: ${positionSize} USDT
+            - Stop Loss: ${stopLoss}
+            - Take Profit: ${takeProfit}
+        `);
 
+        // Place market order to open position
         await this.orderService.placeMarketOrder({
             symbol,
             side: signal,
@@ -363,44 +418,56 @@ class MarketScanner {
             positionSide: signal === 'BUY' ? 'LONG' : 'SHORT',
         });
 
-        // Stop Loss ve Take Profit emirlerini yerleştir
+        // Setup stop loss and take profit orders
         const closeSide = signal === 'BUY' ? 'SELL' : 'BUY';
         const positionSide = signal === 'BUY' ? 'LONG' : 'SHORT';
 
-        // Stop Loss Emiri
+        // Enhanced stop loss with better buffer calculation
+        const stopLossBuffer = signal === 'BUY' ? 0.99 : 1.01; // Default 1% buffer
+        
+        // Calculate dynamic buffer based on volatility if available
+        let dynamicBuffer = stopLossBuffer;
+        if (this.lastMarketConditions[symbol]?.volatility === 'high') {
+            dynamicBuffer = signal === 'BUY' ? 0.98 : 1.02; // 2% buffer for high volatility
+        }
+
+        // Stop Loss Order
         await this.orderService.placeStopLossOrder({
             symbol,
             side: closeSide,
             quantity,
             stopPrice: stopLoss,
-            price: stopLoss * (signal === 'BUY' ? 0.99 : 1.01), // %1 kayma payı
+            price: stopLoss * dynamicBuffer,
             positionSide,
         });
 
-        // Take Profit Emiri
+        // Take Profit Order
         await this.orderService.placeTakeProfitOrder({
             symbol,
             side: closeSide,
             quantity,
             stopPrice: takeProfit,
-            price: takeProfit * (signal === 'BUY' ? 1.01 : 0.99), // %1 kayma payı
+            price: takeProfit * (signal === 'BUY' ? 1.01 : 0.99),
             positionSide,
         });
 
+        // Create position record in database
         await Position.create({
             symbol,
             entries: signal === 'BUY' ? 1 : -1,
             entryPrices: [entryPrice],
-            totalAllocation: allocation,
+            totalAllocation: positionSize,
             isActive: true,
             step: 1,
             nextCandleCloseTime: this.getNextCandleCloseTime('1h'),
             stopLoss,
             takeProfit,
+            strategyUsed: strategyUsed || 'Adaptive Strategy',
+            marketConditions: JSON.stringify(this.lastMarketConditions[symbol] || {})
         });
 
-        logger.info(`New position opened for ${symbol} with allocation ${allocation} USDT, Stop Loss=${stopLoss}, Take Profit=${takeProfit}.`);
-        await this.notifyNewPosition(symbol, allocation, stopLoss, takeProfit);
+        logger.info(`New position opened for ${symbol} with allocation ${positionSize} USDT, Stop Loss=${stopLoss}, Take Profit=${takeProfit}.`);
+        await this.notifyNewPosition(symbol, positionSize, stopLoss, takeProfit, strategyUsed);
     }
 
     async managePosition(position, candles) {
