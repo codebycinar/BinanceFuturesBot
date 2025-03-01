@@ -1,8 +1,9 @@
-// strategies/AdvancedScalpingStrategy.js
+// strategies/MomentumStrategy.js
 
 const ti = require('technicalindicators');
+const logger = require('../utils/logger');
 
-class AdvancedScalpingStrategy {
+class MomentumStrategy {
     constructor(config = {}) {
         // Göstergeler için ayarlar
         this.emaPeriod = config.emaPeriod || 200; // 200 EMA
@@ -11,11 +12,101 @@ class AdvancedScalpingStrategy {
         this.kcLength = config.kcLength || 20; // Keltner Channel uzunluğu
         this.kcMult = config.kcMult || 1.5; // Keltner Channel çarpanı
         this.supportResistanceBars = config.supportResistanceBars || 15; // Destek/direnç için bar sayısı
+        
+        // ATR için parametreler
+        this.atrPeriod = 14;
+        this.atrMultiplier = 2.5; // Risk:Ödül oranı için daha yüksek
     }
 
     async initialize() {
-        console.log(`AdvancedScalpingStrategy Loaded `);
+        logger.info('MomentumStrategy initialized');
     }
+    
+    /**
+     * AdaptiveStrategy tarafından beklenen generateSignal metodu
+     */
+    async generateSignal(candles, symbol) {
+        try {
+            if (!candles || candles.length < 50) {
+                logger.warn(`Not enough candles for ${symbol} to generate Momentum signal`);
+                return { signal: 'NEUTRAL' };
+            }
+            
+            // Mevcut findSignal metodunu kullanarak temel sinyali al
+            const baseSignal = await this.findSignal(candles);
+            
+            // Ek doğrulamalar yap - momentum için güçlü bir fiyat hareketi gerekir
+            const lastCandle = candles[candles.length - 1];
+            const prevCandle = candles[candles.length - 2];
+            const lastClose = parseFloat(lastCandle.close);
+            const lastHigh = parseFloat(lastCandle.high);
+            const lastLow = parseFloat(lastCandle.low);
+            const prevClose = parseFloat(prevCandle.close);
+            
+            // Fiyat hareketinin büyüklüğünü kontrol et
+            const priceChange = Math.abs((lastClose - prevClose) / prevClose * 100);
+            const isStrongMove = priceChange > 1.5; // %1.5'den büyük hareket
+            
+            // Son mumun gövde boyutunu kontrol et (kandil gücü)
+            const bodySize = Math.abs(lastClose - parseFloat(lastCandle.open)) / 
+                            (lastHigh - lastLow);
+            const isStrongCandle = bodySize > 0.6; // Mumun %60'ından fazlası gövde
+            
+            // ATR hesapla (stop loss ve take profit için)
+            const atr = this.calculateATR(candles, this.atrPeriod);
+            
+            // Tam sinyal belirle (güçlü/zayıf)
+            let tradingSignal = 'NEUTRAL';
+            let unmetConditions = [];
+            
+            if (baseSignal === 'BUY') {
+                if (isStrongMove && isStrongCandle) {
+                    tradingSignal = 'BUY';
+                } else {
+                    tradingSignal = 'WEAK_BUY';
+                    if (!isStrongMove) unmetConditions.push('Weak price movement');
+                    if (!isStrongCandle) unmetConditions.push('Weak candle body');
+                }
+            } else if (baseSignal === 'SELL') {
+                if (isStrongMove && isStrongCandle) {
+                    tradingSignal = 'SELL';
+                } else {
+                    tradingSignal = 'WEAK_SELL';
+                    if (!isStrongMove) unmetConditions.push('Weak price movement');
+                    if (!isStrongCandle) unmetConditions.push('Weak candle body');
+                }
+            }
+            
+            // Stop loss ve take profit hesapla
+            let stopLoss, takeProfit;
+            
+            if (tradingSignal === 'BUY' || tradingSignal === 'WEAK_BUY') {
+                stopLoss = lastClose - (atr * this.atrMultiplier);
+                takeProfit = lastClose + (atr * this.atrMultiplier * 3); // 1:3 risk-ödül oranı
+            } else if (tradingSignal === 'SELL' || tradingSignal === 'WEAK_SELL') {
+                stopLoss = lastClose + (atr * this.atrMultiplier);
+                takeProfit = lastClose - (atr * this.atrMultiplier * 3); // 1:3 risk-ödül oranı
+            }
+            
+            // Standart pozisyon büyüklüğü
+            const allocation = 100; // MarketScanner tarafından pozisyon boyutu yönetilecek
+            
+            logger.info(`Momentum scan for ${symbol}: Signal=${tradingSignal}, Price=${lastClose}, StopLoss=${stopLoss}, TakeProfit=${takeProfit}`);
+            
+            return {
+                signal: tradingSignal,
+                stopLoss,
+                takeProfit,
+                allocation,
+                unmetConditions: unmetConditions.join(', ')
+            };
+            
+        } catch (error) {
+            logger.error(`Error generating Momentum signal for ${symbol}: ${error.message}`);
+            return { signal: 'NEUTRAL' };
+        }
+    }
+    
     /**
      * Squeeze Momentum hesaplama
      */
@@ -32,13 +123,31 @@ class AdvancedScalpingStrategy {
 
         // Keltner Channel hesaplama
         const kcBasis = ti.SMA.calculate({ period: this.kcLength, values: closes });
-        const trueRange = candles.map((c, i) => Math.max(c.high - c.low, Math.abs(c.high - c.close), Math.abs(c.low - c.close)));
+        const trueRange = [];
+        for (let i = 1; i < candles.length; i++) {
+            const curr = candles[i];
+            const prev = candles[i-1];
+            const high = parseFloat(curr.high);
+            const low = parseFloat(curr.low);
+            const prevClose = parseFloat(prev.close);
+            trueRange.push(Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose)));
+        }
+        
         const kcRange = ti.SMA.calculate({ period: this.kcLength, values: trueRange });
-        const upperKC = kcBasis.map((k, i) => k + (kcRange[i] || 0) * this.kcMult);
-        const lowerKC = kcBasis.map((k, i) => k - (kcRange[i] || 0) * this.kcMult);
+        const upperKC = [];
+        const lowerKC = [];
+        
+        for (let i = 0; i < kcBasis.length; i++) {
+            if (i < kcRange.length) {
+                upperKC.push(kcBasis[i] + kcRange[i] * this.kcMult);
+                lowerKC.push(kcBasis[i] - kcRange[i] * this.kcMult);
+            }
+        }
 
-        const squeezeOn = lowerBB.every((lb, i) => lb > (lowerKC[i] || 0)) && upperBB.every((ub, i) => ub < (upperKC[i] || 0));
-        const squeezeOff = lowerBB.some((lb, i) => lb < (lowerKC[i] || 0)) && upperBB.some((ub, i) => ub > (upperKC[i] || 0));
+        // Son durumu kontrol et
+        const lastIdx = lowerBB.length - 1;
+        const squeezeOn = lowerBB[lastIdx] > lowerKC[lastIdx] && upperBB[lastIdx] < upperKC[lastIdx];
+        const squeezeOff = !squeezeOn && (lowerBB[lastIdx-1] > lowerKC[lastIdx-1] && upperBB[lastIdx-1] < upperKC[lastIdx-1]);
 
         return { squeezeOn, squeezeOff };
     }
@@ -64,6 +173,43 @@ class AdvancedScalpingStrategy {
 
         return { resistance, support };
     }
+    
+    /**
+     * ATR hesaplama
+     */
+    calculateATR(candles, period) {
+        try {
+            const trValues = [];
+            
+            // True Range değerleri hesapla
+            for (let i = 1; i < candles.length; i++) {
+                const currentCandle = candles[i];
+                const previousCandle = candles[i - 1];
+                
+                const high = parseFloat(currentCandle.high);
+                const low = parseFloat(currentCandle.low);
+                const prevClose = parseFloat(previousCandle.close);
+                
+                // True Range = max(high-low, |high-prevClose|, |low-prevClose|)
+                const tr = Math.max(
+                    high - low,
+                    Math.abs(high - prevClose),
+                    Math.abs(low - prevClose)
+                );
+                
+                trValues.push(tr);
+            }
+            
+            // Son 'period' sayıda değerin ortalamasını al
+            const relevantTR = trValues.slice(-period);
+            const atr = relevantTR.reduce((sum, tr) => sum + tr, 0) / period;
+            
+            return atr;
+        } catch (error) {
+            logger.error('Error calculating ATR:', error);
+            return 0;
+        }
+    }
 
     /**
      * Al/Sat sinyali üretme
@@ -83,22 +229,21 @@ class AdvancedScalpingStrategy {
 
             // Sinyal oluşturma
             if (squeezeOff && lastClose > ema && lastClose > resistance) {
-                console.log('BUY signal detected');
+                logger.info('BUY signal detected by Momentum Strategy (squeeze off + above EMA & resistance)');
                 return 'BUY';
             }
 
             if (squeezeOff && lastClose < ema && lastClose < support) {
-                console.log('SELL signal detected');
+                logger.info('SELL signal detected by Momentum Strategy (squeeze off + below EMA & support)');
                 return 'SELL';
             }
 
-            console.log('NEUTRAL signal detected');
             return 'NEUTRAL';
         } catch (error) {
-            console.error('Error finding signal:', error);
+            logger.error('Error finding signal:', error);
             return 'NEUTRAL';
         }
     }
 }
 
-module.exports = AdvancedScalpingStrategy;
+module.exports = MomentumStrategy;
