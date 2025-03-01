@@ -10,45 +10,8 @@ const dotenv = require("dotenv");
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 const chatId = process.env.TELEGRAM_CHAT_ID;
 
-const BinanceService = require('../services/BinanceService');
-const OrderService = require('../services/OrderService');
 const MultiTimeframeService = require('../services/MultiTimeframeService');
 const EnhancedPositionManager = require('../services/EnhancedPositionManager');
-
-(async () => {
-    try {
-        dotenv.config();
-        bot.start((ctx) => ctx.reply('Binance Futures Bot Online!'));
-        bot.launch();
-        
-        const binanceService = new BinanceService();
-        await binanceService.initialize();
-
-        const orderService = new OrderService(binanceService);
-        const mtfService = new MultiTimeframeService(binanceService);
-        await mtfService.initialize();
-        
-        const marketScanner = new MarketScanner(binanceService, orderService, mtfService);
-        await marketScanner.initialize();
-
-        logger.info('Market Scanner started with Adaptive Strategy and Multi-Timeframe Analysis.');
-
-        // Market taramasını başlat
-        await marketScanner.scanAllSymbols();
-
-        // Periyodik tarama
-        setInterval(async () => {
-            try {
-                await marketScanner.scanAllSymbols();
-                await marketScanner.flushWeakSignalBuffer();
-            } catch (error) {
-                logger.error('Error during Market Scanner periodic scan:', error);
-            }
-        }, 60 * 1000); // 1 dakikada bir çalıştır
-    } catch (error) {
-        logger.error('Error starting Market Scanner:', error);
-    }
-})();
 
 class MarketScanner {
     constructor(binanceService, orderService, mtfService) {
