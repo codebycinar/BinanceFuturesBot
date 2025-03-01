@@ -4,9 +4,12 @@ const BinanceService = require('./services/BinanceService');
 const OrderService = require('./services/OrderService');
 const MarketScanner = require('./services/MarketScanner');
 const MultiTimeframeService = require('./services/MultiTimeframeService');
+const PerformanceTracker = require('./services/PerformanceTracker');
 const config = require('./config/config');
 const { Telegraf } = require('telegraf');
 const dotenv = require("dotenv");
+const express = require('express');
+const path = require('path');
 
 (async () => {
   try {
@@ -28,12 +31,71 @@ const dotenv = require("dotenv");
     const mtfService = new MultiTimeframeService(binanceService);
     await mtfService.initialize();
     
+    // Initialize PerformanceTracker
+    const performanceTracker = new PerformanceTracker();
+    await performanceTracker.initialize();
+    
     // Create MarketScanner with all required services
-    const marketScanner = new MarketScanner(binanceService, orderService, mtfService);
+    const marketScanner = new MarketScanner(binanceService, orderService, mtfService, performanceTracker);
     await marketScanner.strategy.initialize();
     await marketScanner.initialize();
     
-    logger.info('Bot started successfully with Multi-Timeframe Analysis.', { timestamp: new Date().toISOString() });
+    // Initialize web server
+    const app = express();
+    const PORT = process.env.PORT || 3000;
+    
+    // Serve static files from public directory
+    app.use(express.static(path.join(__dirname, 'public')));
+    
+    // API endpoints for web interface
+    app.get('/api/positions', async (req, res) => {
+      try {
+        const positions = await marketScanner.orderService.getAllPositions();
+        res.json(positions);
+      } catch (error) {
+        logger.error(`Error getting positions: ${error.message}`);
+        res.status(500).json({ error: error.message });
+      }
+    });
+    
+    app.get('/api/performance', async (req, res) => {
+      try {
+        const performance = await performanceTracker.getAllPerformance();
+        res.json(performance);
+      } catch (error) {
+        logger.error(`Error getting performance data: ${error.message}`);
+        res.status(500).json({ error: error.message });
+      }
+    });
+    
+    app.get('/api/performance/strategy/:strategyName', async (req, res) => {
+      try {
+        const { strategyName } = req.params;
+        const performance = await performanceTracker.getStrategyPerformance(strategyName);
+        res.json(performance);
+      } catch (error) {
+        logger.error(`Error getting strategy performance: ${error.message}`);
+        res.status(500).json({ error: error.message });
+      }
+    });
+    
+    app.get('/api/performance/symbol/:symbol', async (req, res) => {
+      try {
+        const { symbol } = req.params;
+        const performance = await performanceTracker.getSymbolPerformance(symbol);
+        res.json(performance);
+      } catch (error) {
+        logger.error(`Error getting symbol performance: ${error.message}`);
+        res.status(500).json({ error: error.message });
+      }
+    });
+    
+    // Start web server
+    app.listen(PORT, () => {
+      logger.info(`Web interface started on port ${PORT}`);
+    });
+    
+    logger.info('Bot started successfully with Multi-Timeframe Analysis and Web Interface.', { timestamp: new Date().toISOString() });
 
     // Döngü ile işlemleri sırayla çalıştır
     while (true) {

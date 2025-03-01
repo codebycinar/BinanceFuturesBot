@@ -287,6 +287,36 @@ class OrderService {
       throw error;
     }
   }
+  
+  /**
+   * Tüm aktif ve kapalı pozisyonları getir
+   */
+  async getAllPositions() {
+    try {
+      const { Position } = require('../db/db').models;
+      
+      // Aktif pozisyonları getir
+      const activePositions = await Position.findAll({
+        where: { isActive: true },
+        order: [['createdAt', 'DESC']]
+      });
+      
+      // Son 30 kapalı pozisyonu getir
+      const closedPositions = await Position.findAll({
+        where: { isActive: false },
+        order: [['closedAt', 'DESC']],
+        limit: 30
+      });
+      
+      return {
+        active: activePositions,
+        closed: closedPositions
+      };
+    } catch (error) {
+      logger.error(`Error getting all positions: ${error.message}`);
+      return { active: [], closed: [] };
+    }
+  }
 }
 
 
