@@ -343,8 +343,7 @@ class OrderService {
         symbol,
         side,
         quantity: adjustedQuantity,
-        positionSide,
-        reduceOnly: true,
+        positionSide
       });
     } catch (error) {
       logger.error(`Error closing position for ${symbol}:`, error);

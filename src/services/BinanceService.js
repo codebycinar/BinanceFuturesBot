@@ -195,8 +195,7 @@ class BinanceService {
         type: 'STOP_MARKET',
         stopPrice: adjustedStopPrice,
         quantity: adjustedQuantity,
-        positionSide,
-        reduceOnly: true, // Pozisyonu kapatmak için
+        positionSide
       };
       logger.info(`Placing Stop Loss order for ${symbol}:`, orderData);
       return await this.client.futuresOrder(orderData);
@@ -226,10 +225,9 @@ class BinanceService {
         symbol,
         side,
         type: 'TAKE_PROFIT_MARKET',
-        stopPrice: adjustedStopPrice,
-        quantity: adjustedQuantity,
-        positionSide,
-        reduceOnly: true, // Pozisyonu kapatmak için
+        stopPrice: stopPrice.toString(),
+        quantity: quantity.toString(),
+        positionSide
       };
       logger.info(`Placing Take Profit order for ${symbol}:`, orderData);
       return await this.client.futuresOrder(orderData);
@@ -314,8 +312,7 @@ class BinanceService {
         symbol,
         side,
         type: 'MARKET',
-        quantity: adjustedQuantity,
-        reduceOnly: true, // Pozisyonu sadece azalt (kapat)
+        quantity: adjustedQuantity
       });
 
       // Başarılı işlem detaylarını logla

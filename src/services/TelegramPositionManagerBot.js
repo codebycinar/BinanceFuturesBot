@@ -403,8 +403,7 @@ ${totalPnl >= 0 ? '✅' : '❌'} Total PnL: ${totalPnl.toFixed(2)} USDT
                 symbol,
                 side,
                 type: 'MARKET',
-                quantity,
-                reduceOnly: true,
+                quantity
             });
             
             // Pozisyon kapatma kaydı
