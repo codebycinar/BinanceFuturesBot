@@ -257,6 +257,43 @@ class MarketScanner {
                     unmetConditions,
                     strategyUsed
                 );
+            } else if (signal === 'ADD_BUY' || signal === 'ADD_SELL') {
+                // Mevcut pozisyonu bul ve giriş sayısını arttır
+                const { Position } = models;
+                const { Op } = require('sequelize');
+                const direction = signal === 'ADD_BUY' ? 1 : -1;
+                const position = await Position.findOne({
+                    where: { 
+                        symbol,
+                        isActive: true,
+                        entries: direction > 0 ? { [Op.gt]: 0 } : { [Op.lt]: 0 }
+                    }
+                });
+                
+                if (position) {
+                    await this.addToPosition(position, signal, currentPrice, stopLoss, takeProfit, allocation);
+                } else {
+                    logger.warn(`No active ${direction > 0 ? 'LONG' : 'SHORT'} position found for ${symbol} to add to.`);
+                }
+            } else if (signal === 'EXIT_BUY' || signal === 'EXIT_SELL') {
+                // Pozisyonu kapat
+                const { Position } = models;
+                const { Op } = require('sequelize');
+                const direction = signal === 'EXIT_BUY' ? 1 : -1;
+                const position = await Position.findOne({
+                    where: { 
+                        symbol,
+                        isActive: true,
+                        entries: direction > 0 ? { [Op.gt]: 0 } : { [Op.lt]: 0 }
+                    }
+                });
+                
+                if (position) {
+                    await this.closePosition(position, currentPrice, 'turtle_exit_signal');
+                    logger.info(`Closed ${direction > 0 ? 'LONG' : 'SHORT'} position for ${symbol} based on Turtle exit signal`);
+                } else {
+                    logger.warn(`No active ${direction > 0 ? 'LONG' : 'SHORT'} position found for ${symbol} to close.`);
+                }
             }
         } catch (error) {
             logger.error(`Error scanning symbol ${symbol}: ${error.message || JSON.stringify(error)}`);
@@ -274,6 +311,73 @@ class MarketScanner {
         }
     }
 
+    /**
+     * Pozisyona ilave işlem açma
+     */
+    async addToPosition(position, signal, entryPrice, stopLoss, takeProfit, allocation) {
+        try {
+            const side = signal === 'ADD_BUY' ? 'BUY' : 'SELL';
+            const positionSide = signal === 'ADD_BUY' ? 'LONG' : 'SHORT';
+            const symbol = position.symbol;
+            
+            // Önceki giriş sayısını al ve arttır
+            const existingEntries = Math.abs(position.entries);
+            const newEntryCount = existingEntries + 1;
+            
+            if (newEntryCount > 4) {
+                logger.warn(`Maximum entry count (4) reached for ${symbol}. Not adding more.`);
+                return;
+            }
+            
+            // Pozisyon boyutunu hesapla
+            const positionSize = config.calculate_position_size
+                ? config.riskPerTrade * await this.binanceService.getFuturesBalance() / 4
+                : allocation || config.static_position_size / 4;
+                
+            // Miktar hesaplama
+            const quantity = await this.orderService.calculateStaticPositionSize(symbol, positionSize);
+            
+            // Market emri ile ekstra alım yap
+            await this.orderService.placeMarketOrder({
+                symbol,
+                side,
+                quantity,
+                positionSide
+            });
+            
+            // Pozisyon bilgilerini güncelle
+            position.entryPrices.push(entryPrice);
+            position.totalAllocation += parseFloat(positionSize);
+            position.entries = (signal === 'ADD_BUY') ? newEntryCount : -newEntryCount;
+            
+            // Daha fazla giriş var, stop loss ve take profit seviyelerini güncelle
+            position.stopLoss = stopLoss;
+            position.takeProfit = takeProfit;
+            
+            await position.save();
+            
+            // Bildirim mesajı
+            const message = `
+                🔄 Position Addition (${newEntryCount}/4):
+                - Symbol: ${symbol}
+                - Direction: ${positionSide}
+                - Entry Price: ${entryPrice}
+                - Entry Size: ${positionSize} USDT
+                - Total Position: ${position.totalAllocation} USDT
+                - Updated Stop Loss: ${stopLoss}
+                - Updated Take Profit: ${takeProfit}
+            `;
+            
+            logger.info(message);
+            await bot.telegram.sendMessage(chatId, message);
+            
+            return true;
+        } catch (error) {
+            logger.error(`Error adding to position for ${position.symbol}:`, error);
+            return false;
+        }
+    }
+    
     async calculateQuantityFromUSDT(symbol, usdtAmount) {
         try {
             // 1. Sembolün mevcut fiyatını al
