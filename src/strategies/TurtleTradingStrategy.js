@@ -5,7 +5,7 @@ const { Strategy } = models;
 const config = require('../config/config');
 
 class TurtleTradingStrategy {
-    constructor(config = {}) {
+    constructor() {
         this.parameters = {
             entryChannel: 20,    // 20 periyotluk kanal (giriş sinyali için)
             exitChannel: 10,     // 10 periyotluk kanal (çıkış sinyali için)
