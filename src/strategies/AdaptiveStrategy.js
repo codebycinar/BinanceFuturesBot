@@ -12,6 +12,7 @@ const BollingerStrategy = require('./BollingerStrategy');
 const MomentumStrategy = require('./MomentumStrategy');
 const TrendFollowStrategy = require('./TrendFollowStrategy');
 const TurtleTradingStrategy = require('./TurtleTradingStrategy');
+const ScalpingStrategy = require('./ScalpingStrategy');
 
 // Stratejilerin performansına dayalı seçim için
 const PerformanceTracker = require('../services/PerformanceTracker');
@@ -31,13 +32,15 @@ class AdaptiveStrategy {
         this.momentumStrategy = new MomentumStrategy();
         this.trendFollowStrategy = new TrendFollowStrategy(); // Güncellenmiş TrendFollowStrategy sınıfı
         this.turtleStrategy = new TurtleTradingStrategy();
+        this.scalpingStrategy = new ScalpingStrategy(); // Yeni eklenen 15m scalping stratejisi
         
         // Kullanılabilir tüm stratejileri bir haritada tut
         this.strategies = {
             'BollingerStrategy': this.bollingerStrategy,
             'MomentumStrategy': this.momentumStrategy,
             'TrendFollowStrategy': this.trendFollowStrategy,
-            'TurtleTradingStrategy': this.turtleStrategy
+            'TurtleTradingStrategy': this.turtleStrategy,
+            'ScalpingStrategy': this.scalpingStrategy
         };
         
         // Market conditions tracking
@@ -93,6 +96,14 @@ class AdaptiveStrategy {
         }
         
         await this.turtleStrategy.initialize();
+        
+        try {
+            // Yeni eklenen ScalpingStrategy'i başlat
+            await this.scalpingStrategy.initialize();
+            logger.info('ScalpingStrategy initialized successfully');
+        } catch (error) {
+            logger.error(`Error initializing ScalpingStrategy: ${error.message}`);
+        }
         
         logger.info('Adaptive Strategy initialized with all sub-strategies');
         
@@ -581,7 +592,8 @@ class AdaptiveStrategy {
             'bollinger': 'BollingerStrategy',
             'momentum': 'MomentumStrategy',
             'trendFollow': 'TrendFollowStrategy',
-            'turtle': 'TurtleTradingStrategy'
+            'turtle': 'TurtleTradingStrategy',
+            'scalping': 'ScalpingStrategy'
         };
         
         // Seçilebilir strateji listesini oluştur (devre dışı bırakılmamış stratejilerden)
@@ -645,6 +657,18 @@ class AdaptiveStrategy {
             this.marketConditions.volatilityChange === 'increasing-fast' && availableStrategies['momentum']) {
             logger.info('Strategy Selection: Momentum selected due to rapidly increasing volatility');
             return 'momentum';
+        }
+        
+        // 8. 15 dakikalık scalping stratejisi önceliği
+        if (availableStrategies['scalping']) {
+            // Kısa timeframe için genelde scalping stratejisini tercih et
+            const randomVal = Math.random(); // 0-1 arası rastgele değer
+            
+            // Rastgele %60 ihtimalle scalping stratejisini seç
+            if (randomVal < 0.6) {
+                logger.info('Strategy Selection: Scalping (15m) selected for short-term trading');
+                return 'scalping';
+            }
         }
         
         // Ağırlık tabanlı istatistiksel seçim - sadece kullanılabilir stratejiler arasından
