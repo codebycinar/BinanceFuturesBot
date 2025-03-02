@@ -67,28 +67,28 @@ async function managePosition(position, candles) {
     }
 
     const currentPrice = parseFloat(candles[candles.length - 1].close);
-    const bollingerBands = this.calculateBollingerBands(candles);
+    const bollingerBands = calculateBollingerBands(candles);
     const { upper, lower } = bollingerBands;
 
+    // Görüntülemek için temel parametreleri hesapla
+    const entryPrice = position.entryPrices[0];
+    const pnlPercent = ((currentPrice - entryPrice) / entryPrice * 100).toFixed(2);
+    
     logger.info(`Checking position for ${position.symbol}:
         - Current Price: ${currentPrice}
         - Bollinger Bands: Upper=${upper}, Lower=${lower}, Basis=${bollingerBands.basis}
-        - Current High: ${currentHigh}
-        - Current Low: ${currentLow}
-        - Entry Price: ${position.entryPrices[0]}
-        - RSI: ${rsi.toFixed(2)}
-        - ADX: ${adx ? adx.toFixed(2) : 'N/A'}
-        - Current PnL: ${((currentPrice - position.entryPrices[0]) / position.entryPrices[0] * 100).toFixed(2)}%
+        - Entry Price: ${entryPrice}
+        - Current PnL: ${pnlPercent}%
     `);
 
     // Pozisyon kapatma kontrolü
     if (position.entries > 0 && currentPrice > upper) {
         logger.info(`Closing LONG position for ${position.symbol}. Price above upper Bollinger band.`);
-        await this.closePosition(position, currentPrice);
+        await closePosition(position.symbol, "SELL", position, currentPrice);
         return;
     } else if (position.entries < 0 && currentPrice < lower) {
         logger.info(`Closing SHORT position for ${position.symbol}. Price below lower Bollinger band.`);
-        await this.closePosition(position, currentPrice);
+        await closePosition(position.symbol, "BUY", position, currentPrice);
         return;
     }
 

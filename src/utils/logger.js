@@ -19,6 +19,7 @@ const getCurrentDate = () => {
 // Log dosya adlarını oluştur
 const logFile = path.join(logDir, `${getCurrentDate()}-bot.log`);
 const errorLogFile = path.join(logDir, `${getCurrentDate()}-error.log`);
+const errorLogsFile = path.join(logDir, 'errorlogs.log'); // Kalıcı hata log dosyası
 
 // Ortak format ayarları
 const logFormat = format.combine(
@@ -45,12 +46,20 @@ const logger = createLogger({
       maxFiles: 30 
     }),
     
-    // Sadece error ve warn seviyesindeki logları hata dosyasına yazdır
+    // Günlük hata logları (tarihli)
     new transports.File({ 
       filename: errorLogFile, 
       level: 'error', 
       maxsize: 5242880, // 5MB
       maxFiles: 30 
+    }),
+    
+    // Kalıcı hata log dosyası (tüm hataları bir dosyada tutar)
+    new transports.File({
+      filename: errorLogsFile,
+      level: 'error',
+      maxsize: 10485760, // 10MB
+      maxFiles: 5
     })
   ],
   // Hata durumunda çökmeyi önle
