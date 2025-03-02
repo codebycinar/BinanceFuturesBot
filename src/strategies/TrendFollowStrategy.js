@@ -51,6 +51,22 @@ class TrendFollowStrategy {
       } else if (tradingSignal === 'SELL') {
         stopLoss = currentPrice + (atr * this.parameters.atrMultiplier);
         takeProfit = currentPrice - (atr * this.parameters.atrMultiplier * 2); // 2:1 risk-reward
+      } else {
+        // For NEUTRAL signals, provide default values based on current trend
+        const trend = this.detectTrend(candles);
+        if (trend === 'UP') {
+          // If in uptrend, calculate as if it was a potential BUY
+          stopLoss = currentPrice - (atr * this.parameters.atrMultiplier);
+          takeProfit = currentPrice + (atr * this.parameters.atrMultiplier * 2);
+        } else if (trend === 'DOWN') {
+          // If in downtrend, calculate as if it was a potential SELL
+          stopLoss = currentPrice + (atr * this.parameters.atrMultiplier);
+          takeProfit = currentPrice - (atr * this.parameters.atrMultiplier * 2);
+        } else {
+          // If no clear trend, default to BUY calculation
+          stopLoss = currentPrice - (atr * this.parameters.atrMultiplier);
+          takeProfit = currentPrice + (atr * this.parameters.atrMultiplier * 2);
+        }
       }
 
       // Default allocation from config
@@ -66,7 +82,26 @@ class TrendFollowStrategy {
       };
     } catch (error) {
       logger.error(`Error generating Trend Follow signal for ${symbol}: ${error.message}`);
-      return { signal: 'NEUTRAL' };
+      
+      try {
+        // Even on error, try to provide stop loss and take profit values
+        const atr = this.calculateATR(candles, this.parameters.atrPeriod);
+        const currentPrice = parseFloat(candles[candles.length - 1].close);
+        
+        // Calculate default values based on current price
+        const stopLoss = currentPrice - (atr * this.parameters.atrMultiplier);
+        const takeProfit = currentPrice + (atr * this.parameters.atrMultiplier * 2);
+        
+        return {
+          signal: 'NEUTRAL',
+          stopLoss,
+          takeProfit,
+          allocation: 100,
+          unmetConditions: 'Error calculating signal'
+        };
+      } catch (innerError) {
+        return { signal: 'NEUTRAL' };
+      }
     }
   }
 
@@ -156,6 +191,34 @@ class TrendFollowStrategy {
     } catch (error) {
       logger.error('Error calculating ATR:', error);
       return 0;
+    }
+  }
+  
+  // Detect current market trend based on simple moving averages
+  detectTrend(candles) {
+    try {
+      const closes = candles.map(candle => parseFloat(candle.close));
+      
+      // Calculate SMAs
+      const sma20 = SMA.calculate({ period: this.parameters.sma1Period, values: closes });
+      const sma50 = SMA.calculate({ period: this.parameters.sma2Period, values: closes });
+      
+      // Get current values
+      const currentPrice = closes[closes.length - 1];
+      const currentSMA20 = sma20[sma20.length - 1];
+      const currentSMA50 = sma50[sma50.length - 1];
+      
+      // Determine trend
+      if (currentPrice > currentSMA20 && currentSMA20 > currentSMA50) {
+        return 'UP';
+      } else if (currentPrice < currentSMA20 && currentSMA20 < currentSMA50) {
+        return 'DOWN';
+      } else {
+        return 'SIDEWAYS';
+      }
+    } catch (error) {
+      logger.error('Error detecting trend:', error);
+      return 'SIDEWAYS'; // Default to sideways on error
     }
   }
 }

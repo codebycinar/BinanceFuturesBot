@@ -292,7 +292,23 @@ class BollingerStrategy {
         }
 
         logger.info(`No actionable signal for ${symbol}`);
-        return { signal: 'NEUTRAL', allocation };
+        
+        // NEUTRAL durumda bile stop loss ve take profit hesapla
+        // Bollinger bant mesafesine göre bir risk hesaplaması yap
+        const bandWidth = bb.upper - bb.lower;
+        const riskPercentage = 0.5; // Risk yüzdesi
+        
+        // Varsayılan olarak ATR kullanarak daha dinamik stop loss/take profit hesapla
+        stopLoss = lastClose - (atr.current * 2); // 2x ATR aşağıda stop loss
+        takeProfit = lastClose + (atr.current * 3); // 3x ATR yukarıda take profit (1:1.5 risk/ödül oranı)
+        
+        return { 
+            signal: 'NEUTRAL', 
+            stopLoss, 
+            takeProfit, 
+            allocation,
+            unmetConditions: 'No trading signal detected, monitoring only'
+        };
     }
 }
 

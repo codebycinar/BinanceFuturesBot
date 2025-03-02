@@ -103,7 +103,28 @@ class MomentumStrategy {
             
         } catch (error) {
             logger.error(`Error generating Momentum signal for ${symbol}: ${error.message}`);
-            return { signal: 'NEUTRAL' };
+            
+            // Hata durumunda bile son fiyata göre stop loss ve take profit hesapla
+            try {
+                const lastCandle = candles[candles.length - 1];
+                const lastClose = parseFloat(lastCandle.close);
+                const atr = this.calculateATR(candles, this.atrPeriod);
+                
+                // Varsayılan stop loss ve take profit değerleri
+                const stopLoss = lastClose - (atr * this.atrMultiplier);
+                const takeProfit = lastClose + (atr * this.atrMultiplier * 3);
+                
+                return {
+                    signal: 'NEUTRAL',
+                    stopLoss, 
+                    takeProfit,
+                    allocation: 100,
+                    unmetConditions: 'Error calculating signal'
+                };
+            } catch (innerError) {
+                // İç içe hata durumu
+                return { signal: 'NEUTRAL' };
+            }
         }
     }
     
@@ -238,6 +259,8 @@ class MomentumStrategy {
                 return 'SELL';
             }
 
+            // NEUTRAL durumunda da bilgi verelim
+            logger.info('NEUTRAL signal from Momentum Strategy (no squeeze-off pattern detected)');
             return 'NEUTRAL';
         } catch (error) {
             logger.error('Error finding signal:', error);

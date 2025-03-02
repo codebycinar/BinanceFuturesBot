@@ -156,6 +156,20 @@ class TurtleTradingStrategy {
                     takeProfit = currentPrice - (atr * this.parameters.atrMultiplier * this.parameters.profitMultiplier);
                 }
                 unmetConditions.push('Volume confirmation missing');
+            } else {
+                // NEUTRAL durumda bile stop loss ve take profit hesapla
+                // Varsayılan olarak alış yönü için (long) hesaplama yapalım
+                stopLoss = currentPrice - (atr * this.parameters.atrMultiplier);
+                takeProfit = currentPrice + (atr * this.parameters.atrMultiplier * this.parameters.profitMultiplier);
+                
+                // Yönsel eğilimi (trend) baz alarak hesaplamayı düzelt
+                if (isDowntrend) {
+                    // Eğer aşağı yönlü bir piyasa eğilimi varsa, short (satış) için hesapla
+                    stopLoss = currentPrice + (atr * this.parameters.atrMultiplier);
+                    takeProfit = currentPrice - (atr * this.parameters.atrMultiplier * this.parameters.profitMultiplier);
+                }
+                
+                unmetConditions.push('No breakout detected, monitoring only');
             }
             
             // Ek piyasa bilgilerini hesapla
