@@ -298,6 +298,18 @@ async function closePosition(symbol, side, position, closePrice) {
     try {
         logger.info(`Closing position for ${symbol} with side ${side}.`);
 
+        // Açık emirleri iptal et (herhangi bir TP/SL var ise)
+        try {
+            await binanceService.client.futuresCancelAllOpenOrders({ symbol });
+            logger.info(`Cancelled all open orders for ${symbol}`);
+        } catch (cancelError) {
+            logger.warn(`Error cancelling open orders for ${symbol}: ${cancelError.message}`);
+            // Devam et, bu kritik değil
+        }
+
+        // Kısa bir bekleme yap
+        await new Promise(resolve => setTimeout(resolve, 500));
+
         // BinanceService'e pozisyonu kapatma talebini gönder
         const order = await binanceService.closePosition(symbol, side);
 
@@ -305,11 +317,47 @@ async function closePosition(symbol, side, position, closePrice) {
         position.isActive = false;
         position.closedPrice = closePrice;
         position.closedAt = new Date();
+        
+        // PnL hesapla
+        const entryPrice = position.entryPrices[0];
+        let pnlPercent = 0;
+        
+        if (position.entries > 0) { // LONG
+            pnlPercent = ((closePrice - entryPrice) / entryPrice) * 100;
+        } else { // SHORT
+            pnlPercent = ((entryPrice - closePrice) / entryPrice) * 100;
+        }
+        
+        const pnlAmount = (position.totalAllocation * pnlPercent) / 100;
+        position.pnlPercent = pnlPercent;
+        position.pnlAmount = pnlAmount;
+        position.exitReason = 'signal';
+        
         await position.save();
 
-        logger.info(`Position closed successfully for ${symbol}. Order details: ${JSON.stringify(order)}`);
+        logger.info(`Position closed successfully for ${symbol}. PnL: ${pnlPercent.toFixed(2)}% (${pnlAmount.toFixed(2)} USDT). Order details: ${JSON.stringify(order)}`);
+        
+        return order;
     } catch (error) {
         logger.error(`Error closing position for ${symbol}: ${error.message}`);
+        // Hata durumunda da veritabanını güncelle (pozisyon kapanmış olabilir)
+        try {
+            const openPositions = await binanceService.getOpenPositions();
+            const binancePosition = openPositions.find(p => p.symbol === symbol);
+            
+            // Pozisyon Binance'de yoksa/kapanmışsa DB'yi güncelle
+            if (!binancePosition || parseFloat(binancePosition.positionAmt) === 0) {
+                position.isActive = false;
+                position.closedPrice = closePrice;
+                position.closedAt = new Date();
+                position.exitReason = 'error_but_closed';
+                await position.save();
+                logger.info(`Position for ${symbol} marked as closed in DB despite error`);
+            }
+        } catch (dbError) {
+            logger.error(`Error updating DB after close error for ${symbol}: ${dbError.message}`);
+        }
+        
         throw error;
     }
 }

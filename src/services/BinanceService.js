@@ -289,10 +289,10 @@ class BinanceService {
         side,
         type: 'MARKET',
         quantity: adjustedQuantity,
-        positionSide: position.positionSide, // LONG veya SHORT
+        reduceOnly: true, // Pozisyonu sadece azalt (kapat)
       });
 
-      // Başarılı işlem detaylarını logla ve Telegram'a gönder
+      // Başarılı işlem detaylarını logla
       const successMessage = `
           ✅ Position Closed Successfully:
           - Symbol: ${symbol}
@@ -303,7 +303,8 @@ class BinanceService {
           - Profit/Loss: ${profitLossUSDT} USDT
           - Order ID: ${order.orderId || 'N/A'}
       `;
-      this.bot.sendMessage(config.telegramChatId, successMessage);
+      
+      // Sadece loglama yap, mesajı positionManager'dan gönderelim
       logger.info(successMessage);
 
       return order;
@@ -314,7 +315,7 @@ class BinanceService {
           - Side: ${side}
           - Error: ${error.message}
       `;
-      this.bot.sendMessage(config.telegramChatId, errorMessage);
+      // Sadece loglama yap, mesajı positionManager'dan gönderelim
       logger.error(errorMessage);
       throw error;
     }
