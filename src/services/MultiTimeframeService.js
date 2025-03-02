@@ -6,7 +6,21 @@ const ti = require('technicalindicators');
 class MultiTimeframeService {
     constructor(binanceService) {
         this.binanceService = binanceService;
-        this.timeframes = ['1h', '4h', '1d']; // Daha uzun zaman dilimlerine odaklanıyoruz
+        
+        // Varsayılan zaman dilimleri
+        this.defaultTimeframes = ['1h', '4h', '1d']; 
+        
+        // Stratejilere göre optimize edilmiş zaman dilimleri
+        // Farklı strateji tipleri için önerilen zaman dilimleri
+        this.strategyTimeframes = {
+            'scalping': ['1m', '5m', '15m'],
+            'intraday': ['15m', '1h', '4h'],
+            'swing': ['1h', '4h', '1d'],
+            'longterm': ['4h', '1d', '1w']
+        };
+
+        // Tüm desteklenen zaman dilimleri
+        this.allTimeframes = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '8h', '12h', '1d', '3d', '1w'];
     }
 
     async initialize() {
@@ -18,10 +32,53 @@ class MultiTimeframeService {
             throw error;
         }
     }
+    
+    // Stratejiye en uygun zaman dilimlerini döndürür
+    getOptimalTimeframes(strategy) {
+        if (!strategy) {
+            logger.warn('No strategy provided, using default timeframes');
+            return this.defaultTimeframes;
+        }
+        
+        // Stratejide preferredTimeframe tanımlanmışsa, onu kullan
+        if (strategy.preferredTimeframe) {
+            const preferredTimeframe = strategy.preferredTimeframe;
+            logger.info(`Using strategy's preferred timeframe: ${preferredTimeframe}`);
+            
+            // Stratejinin tercih ettiği zaman dilimini ortaya koyarak farklı zaman dilimlerini oluştur
+            const index = this.allTimeframes.indexOf(preferredTimeframe);
+            if (index !== -1) {
+                // Tercih edilen zaman dilimi ve onun bir altı ve bir üstü
+                const lowerIndex = Math.max(0, index - 1);
+                const upperIndex = Math.min(this.allTimeframes.length - 1, index + 1);
+                
+                const timeframes = [
+                    this.allTimeframes[lowerIndex],
+                    preferredTimeframe
+                ];
+                
+                // Üst zaman dilimi farklı ise ekle
+                if (upperIndex !== index && upperIndex !== lowerIndex) {
+                    timeframes.push(this.allTimeframes[upperIndex]);
+                }
+                
+                return timeframes;
+            } else {
+                logger.warn(`Preferred timeframe ${preferredTimeframe} not found in supported timeframes, using default`);
+            }
+        }
+        
+        // Stratejiye özel bir zaman dilimi tanımlanmamışsa varsayılanları kullan
+        return this.defaultTimeframes;
+    }
 
-    async getMultiTimeframeData(symbol, customTimeframes = null) {
+    async getMultiTimeframeData(symbol, strategy = null, customTimeframes = null) {
         try {
-            const timeframes = customTimeframes || this.timeframes;
+            // Strateji varsa onun için optimize edilmiş zaman dilimlerini kullan
+            // Yoksa custom timeframes veya varsayılan değerleri kullan
+            const timeframes = customTimeframes || 
+                              (strategy ? this.getOptimalTimeframes(strategy) : 
+                              this.defaultTimeframes);
             const result = {};
 
             // Fetch candles for all timeframes concurrently

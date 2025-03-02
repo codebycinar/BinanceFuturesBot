@@ -13,16 +13,32 @@ const MomentumStrategy = require('./MomentumStrategy');
 const TrendFollowStrategy = require('./TrendFollowStrategy');
 const TurtleTradingStrategy = require('./TurtleTradingStrategy');
 
+// Stratejilerin performansına dayalı seçim için
+const PerformanceTracker = require('../services/PerformanceTracker');
+const StrategySelector = require('../services/StrategySelector');
+
 class AdaptiveStrategy {
     constructor(binanceService) {
         this.binanceService = binanceService || new BinanceService();
         this.mtfService = new MultiTimeframeService(this.binanceService);
+        
+        // Performans izleme ve strateji seçimi için
+        this.performanceTracker = new PerformanceTracker();
+        this.strategySelector = new StrategySelector(this.performanceTracker);
         
         // Initialize different strategies
         this.bollingerStrategy = new BollingerStrategy('BollingerStrategy');
         this.momentumStrategy = new MomentumStrategy();
         this.trendFollowStrategy = new TrendFollowStrategy(); // Güncellenmiş TrendFollowStrategy sınıfı
         this.turtleStrategy = new TurtleTradingStrategy();
+        
+        // Kullanılabilir tüm stratejileri bir haritada tut
+        this.strategies = {
+            'BollingerStrategy': this.bollingerStrategy,
+            'MomentumStrategy': this.momentumStrategy,
+            'TrendFollowStrategy': this.trendFollowStrategy,
+            'TurtleTradingStrategy': this.turtleStrategy
+        };
         
         // Market conditions tracking
         this.marketConditions = {
@@ -48,7 +64,12 @@ class AdaptiveStrategy {
     }
     
     async initialize() {
+        // Temel servisleri başlat
         await this.mtfService.initialize();
+        await this.performanceTracker.initialize();
+        await this.strategySelector.initialize();
+        
+        // Tüm alt stratejileri başlat
         await this.bollingerStrategy.initialize();
         await this.momentumStrategy.initialize();
         
@@ -74,6 +95,10 @@ class AdaptiveStrategy {
         await this.turtleStrategy.initialize();
         
         logger.info('Adaptive Strategy initialized with all sub-strategies');
+        
+        // Strateji durumlarını loglama
+        const strategyReport = await this.strategySelector.getStrategyReport();
+        logger.info('Current strategy status report:', strategyReport);
         
         try {
             // Veritabanından strateji ağırlıklarını yükle
@@ -109,7 +134,7 @@ class AdaptiveStrategy {
             await this.analyzeMarketConditions(mtfData, symbol);
             
             // Select the appropriate strategy based on market conditions
-            const strategy = this.selectStrategy();
+            const strategy = await this.selectStrategy(symbol);
             
             // Generate signal using the selected strategy
             const signal = await this.executeStrategy(strategy, mtfData, symbol);
@@ -546,64 +571,90 @@ class AdaptiveStrategy {
         logger.info(`Updated strategy weights: ${JSON.stringify(weights)}`);
     }
 
-    selectStrategy() {
+    async selectStrategy(symbol) {
         // Piyasa koşullarını al
         const { volatility, trend, marketType, trendStrength, breakout } = this.marketConditions;
         
-        // Direkt kural tabanlı seçim (öncelikli durumlar)
+        // Performans verilerine dayalı olarak devre dışı bırakılmış stratejileri kontrol et
+        // Strateji adını timeframe haritasından gerçek strateji adına çeviren yardımcı fonksiyon
+        const strategyNameMap = {
+            'bollinger': 'BollingerStrategy',
+            'momentum': 'MomentumStrategy',
+            'trendFollow': 'TrendFollowStrategy',
+            'turtle': 'TurtleTradingStrategy'
+        };
+        
+        // Seçilebilir strateji listesini oluştur (devre dışı bırakılmamış stratejilerden)
+        const availableStrategies = {};
+        for (const [key, value] of Object.entries(this.strategyWeights)) {
+            const strategyFullName = strategyNameMap[key];
+            if (await this.strategySelector.isStrategyEnabled(strategyFullName)) {
+                availableStrategies[key] = value;
+            } else {
+                logger.warn(`Strategy ${strategyFullName} is disabled due to poor performance and won't be selected`);
+            }
+        }
+        
+        // Hiçbir strateji kullanılabilir değilse, varsayılan olarak turtle kullan
+        if (Object.keys(availableStrategies).length === 0) {
+            logger.warn('No profitable strategies available, using TurtleTradingStrategy as default');
+            return 'turtle';
+        }
+        
+        // Direkt kural tabanlı seçim (öncelikli durumlar) - ama sadece kullanılabilir stratejiler arasından
         
         // 1. Kırılma durumunda Turtle Trading (Bu koşul en yüksek öncelikli)
-        if (breakout) {
+        if (breakout && availableStrategies['turtle']) {
             logger.info('Strategy Selection: Turtle Trading selected due to price breakout');
             return 'turtle';
         }
         
         // 2. Yüksek hacim durumunda da Turtle (kripto paraların ani hareketlerini yakalamak için)
-        if (this.marketConditions.volume === 'high' && volatility !== 'low') {
+        if (this.marketConditions.volume === 'high' && volatility !== 'low' && availableStrategies['turtle']) {
             logger.info('Strategy Selection: Turtle Trading selected due to high volume');
             return 'turtle';
         }
         
         // 3. Uzun süreli bir range'den sonra Turtle (kırılma olasılığı için)
-        if (this.marketConditions.rangeLength > 14) {
+        if (this.marketConditions.rangeLength > 14 && availableStrategies['turtle']) {
             logger.info('Strategy Selection: Turtle Trading selected due to potential breakout after long range');
             return 'turtle'; 
         }
         
         // 4. Volatilite artış eğilimi Turtle için uygun (kırılma hazırlığı)
-        if (this.marketConditions.volatilityChange === 'increasing-fast' || 
-            this.marketConditions.volatilityChange === 'increasing') {
+        if ((this.marketConditions.volatilityChange === 'increasing-fast' || 
+            this.marketConditions.volatilityChange === 'increasing') && availableStrategies['turtle']) {
             logger.info('Strategy Selection: Turtle Trading selected due to increasing volatility');
             return 'turtle';
         }
         
         // 5. Güçlü trend varsa Trend Takip
-        if (marketType === 'trending' && trendStrength > 75) {
+        if (marketType === 'trending' && trendStrength > 75 && availableStrategies['trendFollow']) {
             logger.info('Strategy Selection: Trend Follow selected due to strong trend');
             return 'trendFollow';
         }
         
         // 6. Kesin yatay piyasa Bollinger
-        if (marketType === 'ranging' && this.marketConditions.rangeLength > 12) {
+        if (marketType === 'ranging' && this.marketConditions.rangeLength > 12 && availableStrategies['bollinger']) {
             logger.info('Strategy Selection: Bollinger selected due to established range market');
             return 'bollinger';
         }
         
         // 7. Çok yüksek volatilite momentum
         if (volatility === 'high' && 
-            (this.marketConditions.volatilityChange === 'increasing-fast')) {
+            this.marketConditions.volatilityChange === 'increasing-fast' && availableStrategies['momentum']) {
             logger.info('Strategy Selection: Momentum selected due to rapidly increasing volatility');
             return 'momentum';
         }
         
-        // Ağırlık tabanlı istatistiksel seçim
-        // En yüksek ağırlığa sahip stratejiyi seç, ancak ağırlıklar arasında fark çok düşükse Turtle tercih et
+        // Ağırlık tabanlı istatistiksel seçim - sadece kullanılabilir stratejiler arasından
+        // En yüksek ağırlığa sahip stratejiyi seç
         let highestWeight = 0;
         let secondHighestWeight = 0;
-        let selectedStrategy = 'turtle'; // Varsayılan değer değiştirildi
+        let selectedStrategy = null;
         let secondStrategy = '';
         
-        Object.entries(this.strategyWeights).forEach(([strategy, weight]) => {
+        Object.entries(availableStrategies).forEach(([strategy, weight]) => {
             if (weight > highestWeight) {
                 secondHighestWeight = highestWeight;
                 secondStrategy = selectedStrategy;
@@ -615,14 +666,16 @@ class AdaptiveStrategy {
             }
         });
         
+        // selectedStrategy null olamaz, çünkü en az bir strateji kullanılabilir olmalı
+        
         // Eğer en yüksek ağırlıklı 2 strateji arasındaki fark az ise ve ikinci strateji Turtle ise, Turtle'ı seç
-        if (highestWeight - secondHighestWeight < 10 && secondStrategy === 'turtle') {
+        if (highestWeight - secondHighestWeight < 10 && secondStrategy === 'turtle' && availableStrategies['turtle']) {
             selectedStrategy = 'turtle';
             logger.info(`Strategy Selection: Turtle chosen due to close weight with ${secondHighestWeight} vs ${highestWeight}`);
         }
         
-        logger.info(`Strategy Selection: Selected ${selectedStrategy} with weight ${highestWeight} based on market conditions`);
-        logger.info(`Strategy weights: ${JSON.stringify(this.strategyWeights)}`);
+        logger.info(`Strategy Selection for ${symbol}: Selected ${selectedStrategy} with weight ${highestWeight} based on market conditions`);
+        logger.info(`Available strategy weights: ${JSON.stringify(availableStrategies)}`);
         return selectedStrategy;
     }
     

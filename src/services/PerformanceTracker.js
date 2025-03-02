@@ -213,6 +213,81 @@ class PerformanceTracker {
             return null;
         }
     }
+    
+    /**
+     * İstenen stratejinin kârlı olup olmadığını kontrol eder
+     * @param {string} strategyName - Strateji adı
+     * @param {number} minTrades - Minimum işlem sayısı (varsayılan: 10)
+     * @returns {Promise<boolean>} - Kârlı ise true, değilse false
+     */
+    async isStrategyProfitable(strategyName, minTrades = 10) {
+        try {
+            // Stratejiye ait tüm performans kayıtlarını bul
+            const performances = await StrategyPerformance.findAll({
+                where: { strategyName }
+            });
+            
+            if (performances.length === 0) {
+                logger.info(`No performance data found for strategy ${strategyName}`);
+                return true; // Veri yoksa şansını denesin
+            }
+            
+            // Tüm sembollerde toplam işlem sayısını hesapla
+            const totalTrades = performances.reduce((sum, p) => sum + p.totalTrades, 0);
+            
+            // Minimum işlem sayısına ulaşılmadıysa, henüz karar verme
+            if (totalTrades < minTrades) {
+                logger.info(`Strategy ${strategyName} has ${totalTrades}/${minTrades} trades, not enough data to decide profitability`);
+                return true;
+            }
+            
+            // Toplam kâr ve zararı hesapla
+            const totalProfit = performances.reduce((sum, p) => sum + p.totalProfit, 0);
+            const totalLoss = performances.reduce((sum, p) => sum + p.totalLoss, 0);
+            const netPnl = totalProfit - totalLoss;
+            
+            const isProfitable = netPnl > 0;
+            
+            logger.info(`Strategy ${strategyName} profitability check: ${totalTrades} trades, Net PnL: ${netPnl.toFixed(2)} USDT, Profitable: ${isProfitable}`);
+            
+            return isProfitable;
+        } catch (error) {
+            logger.error(`Error checking strategy profitability for ${strategyName}: ${error.message}`);
+            return true; // Hata durumunda şansını denesin
+        }
+    }
+    
+    /**
+     * İstenen stratejinin kazanma oranını döndürür
+     * @param {string} strategyName - Strateji adı
+     * @returns {Promise<number>} - Kazanma oranı
+     */
+    async getStrategyWinRate(strategyName) {
+        try {
+            // Stratejiye ait tüm performans kayıtlarını bul
+            const performances = await StrategyPerformance.findAll({
+                where: { strategyName }
+            });
+            
+            if (performances.length === 0) {
+                return 0;
+            }
+            
+            // Toplam işlem ve kazanan işlem sayısını hesapla
+            const totalTrades = performances.reduce((sum, p) => sum + p.totalTrades, 0);
+            const winningTrades = performances.reduce((sum, p) => sum + p.winningTrades, 0);
+            
+            if (totalTrades === 0) {
+                return 0;
+            }
+            
+            const winRate = (winningTrades / totalTrades) * 100;
+            return winRate;
+        } catch (error) {
+            logger.error(`Error getting win rate for strategy ${strategyName}: ${error.message}`);
+            return 0;
+        }
+    }
 }
 
 module.exports = PerformanceTracker;

@@ -5,7 +5,7 @@ const { Strategy } = models;
 const config = require('../config/config');
 
 class TurtleTradingStrategy {
-    constructor() {
+    constructor(config = {}) {
         this.parameters = {
             entryChannel: 20,    // 20 günlük kanal (giriş sinyali için)
             exitChannel: 10,     // 10 günlük kanal (çıkış sinyali için)
@@ -15,6 +15,9 @@ class TurtleTradingStrategy {
             confirmationPeriod: 3, // En az 3 mum gerekli kırılma doğrulaması için
             profitMultiplier: 3   // Risk:Ödül oranını 1:3'e çıkardık
         };
+        
+        // Turtle Trading uzun vadeli bir strateji olduğu için günlük zaman dilimi tercih edilir
+        this.preferredTimeframe = config.preferredTimeframe || '1d';
     }
     
     async initialize() {

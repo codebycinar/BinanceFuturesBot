@@ -5,9 +5,12 @@ const ti = require('technicalindicators');
 const config = require('../config/config');
 
 class BollingerStrategy {
-    constructor(strategyName) {
+    constructor(strategyName, config = {}) {
         this.strategyName = strategyName;
-        this.parameters = config.strategy;
+        this.parameters = config.strategy || config;
+        
+        // Bollinger Bands için orta vadeli bir zaman dilimi tercih edilir
+        this.preferredTimeframe = config.preferredTimeframe || '1h';
     }
 
     async loadParameters() {

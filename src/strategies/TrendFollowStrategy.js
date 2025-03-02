@@ -2,8 +2,7 @@ const { SMA, RSI, MACD, ADX } = require('technicalindicators');
 const logger = require('../utils/logger');
 
 class TrendFollowStrategy {
-  constructor() {
-    // No need for candlesticks in constructor
+  constructor(config = {}) {
     this.parameters = {
       sma1Period: 20,
       sma2Period: 50,
@@ -15,6 +14,9 @@ class TrendFollowStrategy {
       atrPeriod: 14,
       atrMultiplier: 2
     };
+    
+    // Trend takip stratejisi için orta-uzun vadeli bir zaman dilimi tercih edilir
+    this.preferredTimeframe = config.preferredTimeframe || '4h';
   }
 
   async initialize() {

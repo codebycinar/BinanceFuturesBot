@@ -14,10 +14,11 @@ const MultiTimeframeService = require('../services/MultiTimeframeService');
 const EnhancedPositionManager = require('../services/EnhancedPositionManager');
 
 class MarketScanner {
-    constructor(binanceService, orderService, mtfService) {
+    constructor(binanceService, orderService, mtfService, performanceTracker = null) {
         this.binanceService = binanceService;
         this.orderService = orderService;
         this.mtfService = mtfService;
+        this.performanceTracker = performanceTracker;
         this.strategy = new AdaptiveStrategy(binanceService);
         this.positionStates = {};
         this.weakSignalBuffer = []; // Zayıf sinyalleri gruplamak için buffer
@@ -116,25 +117,18 @@ class MarketScanner {
         }
     }
 
-    async notifyPositionClosed(symbol, closePrice) {
-        const message = `
-    ✅ Position for ${symbol} closed at price ${closePrice}.
-    `;
-
-        try {
-            await bot.telegram.sendMessage(chatId, message);
-        } catch (error) {
-            logger.error(`Error sending position closed message: ${error.message}`);
-        }
-    }
-
     /**
      * Pozisyon kapandığında mesaj gönderir.
      */
-    async notifyPositionClosed(symbol, closePrice) {
+    async notifyPositionClosed(symbol, closePrice, pnlPercent = 0, pnlAmount = 0) {
+        const isProfit = pnlPercent > 0;
+        const emoji = isProfit ? '🟢' : '🔴';
+        
         const message = `
-✅ Position for ${symbol} closed at price ${closePrice}.
-`;
+    ${emoji} Position for ${symbol} closed at price ${closePrice}
+    - PnL: ${pnlPercent.toFixed(2)}% (${pnlAmount.toFixed(2)} USDT)
+    ${isProfit ? '✅ PROFIT' : '❌ LOSS'}
+    `;
 
         try {
             await bot.telegram.sendMessage(chatId, message);
@@ -211,15 +205,19 @@ class MarketScanner {
                 return;
             }
 
-            // Multi-timeframe data alma
-            const mtfData = await this.mtfService.getMultiTimeframeData(symbol);
+            // Stratejiye göre optimize edilmiş zaman dilimlerini kullan
+            const mtfData = await this.mtfService.getMultiTimeframeData(symbol, this.strategy);
             
-            // Hourly candles for signal generation (legacy compatibility)
-            const candles = mtfData.candles['1h'];
+            // Strateji için tercih edilen zaman dilimini kullan veya varsayılan olarak 1h'ı kullan
+            const preferredTimeframe = this.strategy.preferredTimeframe || '1h';
+            const candles = mtfData.candles[preferredTimeframe] || mtfData.candles['1h'];
+            
             if (!candles || candles.length === 0) {
-                logger.warn(`No candles fetched for ${symbol}. Skipping.`);
+                logger.warn(`No candles fetched for ${symbol} with timeframe ${preferredTimeframe}. Skipping.`);
                 return;
             }
+            
+            logger.info(`Using ${preferredTimeframe} timeframe for ${symbol} with ${this.strategy.constructor.name}`);
             
             // Market koşullarını analiz et
             const marketConditions = await this.strategy.analyzeMarketConditions(mtfData, symbol);
@@ -322,7 +320,7 @@ class MarketScanner {
     }
 
     // Pozisyonu kapatma metodu
-    async closePosition(position, closePrice) {
+    async closePosition(position, closePrice, exitReason = 'manual') {
         const { symbol, totalAllocation, entries } = position;
         const side = entries > 0 ? 'SELL' : 'BUY';
         const positionSide = entries > 0 ? 'LONG' : 'SHORT';
@@ -333,10 +331,37 @@ class MarketScanner {
             position.isActive = false; // Pozisyonu kapalı olarak işaretle
             position.closedPrice = closePrice; // Kapanış fiyatını kaydet
             position.closedAt = new Date(); // Kapanış zamanını kaydet
+            position.exitReason = exitReason; // Çıkış nedenini kaydet
+            
+            // PnL hesaplama
+            const entryPrice = position.entryPrices.reduce((sum, price) => sum + price, 0) / position.entryPrices.length;
+            let pnlPercent = 0;
+            
+            if (entries > 0) { // LONG
+                pnlPercent = ((closePrice - entryPrice) / entryPrice) * 100;
+            } else { // SHORT
+                pnlPercent = ((entryPrice - closePrice) / entryPrice) * 100;
+            }
+            
+            const pnlAmount = (totalAllocation * pnlPercent) / 100;
+            
+            position.pnlPercent = pnlPercent;
+            position.pnlAmount = pnlAmount;
+            
+            // Pozisyon tutma süresini hesapla (dakika cinsinden)
+            const createdAt = new Date(position.createdAt);
+            const closedAt = new Date(position.closedAt);
+            position.holdTime = Math.round((closedAt - createdAt) / (1000 * 60));
+            
             await position.save();
 
-            logger.info(`Position for ${symbol} closed at price ${closePrice}.`);
-            await this.notifyPositionClosed(symbol, closePrice);
+            // Performans kaydını güncelle
+            if (this.performanceTracker) {
+                await this.performanceTracker.updatePerformance(position);
+            }
+
+            logger.info(`Position for ${symbol} closed at price ${closePrice}. PnL: ${pnlPercent.toFixed(2)}%, Amount: ${pnlAmount.toFixed(2)} USDT`);
+            await this.notifyPositionClosed(symbol, closePrice, pnlPercent, pnlAmount);
         } catch (error) {
             logger.error(`Error closing position for ${symbol}:`, error);
         }

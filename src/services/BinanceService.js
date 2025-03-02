@@ -368,16 +368,23 @@ class BinanceService {
   /**
    * ATR hesaplama fonksiyonu
    */
-  async calculateATR(symbol, period) {
+  async calculateATR(symbol, period, strategy = null) {
     try {
-
-      // Strateji parametrelerinden timeframe değerini al
-      const timeframe = this.parameters && this.parameters.timeframe ? this.parameters.timeframe : '1h';
-
+      // Strateji varsa onun tercih ettiği zaman dilimini kullan
+      // yoksa config'den veya varsayılan olarak 1h'ı kullan
+      let timeframe = '1h';
+      
+      if (strategy && strategy.preferredTimeframe) {
+        timeframe = strategy.preferredTimeframe;
+      } else if (this.parameters && this.parameters.timeframe) {
+        timeframe = this.parameters.timeframe;
+      } else if (config.strategy && config.strategy.timeframe) {
+        timeframe = config.strategy.timeframe;
+      }
 
       const candles = await this.getCandles(symbol, timeframe, period + 1);
       if (candles.length < period + 1) {
-        logger.warn(`Not enough candles to calculate ATR for ${symbol}`);
+        logger.warn(`Not enough candles to calculate ATR for ${symbol} with timeframe ${timeframe}`);
         return undefined;
       }
 

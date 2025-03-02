@@ -20,6 +20,9 @@ class MultiTimeframeScalpingStrategy {
         this.lrScalingType = config.lrScalingType || 'Standard Deviation'; // 'Standard Deviation' veya 'ATR'
         this.lrScalingCoefficient1 = config.lrScalingCoefficient1 || 1; // Scaling Coefficient Level 1
         this.lrScalingCoefficient2 = config.lrScalingCoefficient2 || 2; // Scaling Coefficient Level 2
+        
+        // Strateji için optimum zaman dilimi
+        this.preferredTimeframe = config.preferredTimeframe || '1m'; // Scalping için 1 dakikalık zaman dilimi
     }
     async initialize() {
         console.log(`MultiTimeframeScalpingStrategy Loaded `);
