@@ -185,9 +185,24 @@ class BinanceService {
       const pricePrecision = this.getPricePrecision(symbol);
       const quantityPrecision = this.getQuantityPrecision(symbol);
       
-      // Adjust the price and quantity to the correct precision
-      const adjustedStopPrice = parseFloat(stopPrice).toFixed(pricePrecision);
-      const adjustedQuantity = parseFloat(quantity).toFixed(quantityPrecision);
+      // Adjust price according to tick size
+      const tickSize = parseFloat(this.exchangeInfo[symbol].filters.PRICE_FILTER.tickSize);
+      const stepSize = parseFloat(this.exchangeInfo[symbol].filters.LOT_SIZE.stepSize);
+      
+      // Properly round price to valid tick size increments
+      const rawStopPrice = parseFloat(stopPrice);
+      const tickSizeDecimals = (tickSize.toString().split('.')[1] || '').length;
+      const roundedStopPrice = Math.floor(rawStopPrice / tickSize) * tickSize;
+      const adjustedStopPrice = roundedStopPrice.toFixed(tickSizeDecimals);
+      
+      // Properly round quantity to valid step size increments
+      const rawQuantity = parseFloat(quantity);
+      const stepSizeDecimals = (stepSize.toString().split('.')[1] || '').length;
+      const roundedQuantity = Math.floor(rawQuantity / stepSize) * stepSize;
+      const adjustedQuantity = roundedQuantity.toFixed(stepSizeDecimals);
+      
+      logger.info(`Price precision for ${symbol}: ${pricePrecision}, Quantity precision: ${quantityPrecision}`);
+      logger.info(`Raw price: ${rawStopPrice} -> Adjusted: ${adjustedStopPrice}, Raw quantity: ${rawQuantity} -> Adjusted: ${adjustedQuantity}`);
       
       const orderData = {
         symbol,
@@ -217,9 +232,24 @@ class BinanceService {
       const pricePrecision = this.getPricePrecision(symbol);
       const quantityPrecision = this.getQuantityPrecision(symbol);
       
-      // Adjust the price and quantity to the correct precision
-      const adjustedStopPrice = parseFloat(stopPrice).toFixed(pricePrecision);
-      const adjustedQuantity = parseFloat(quantity).toFixed(quantityPrecision);
+      // Adjust price according to tick size
+      const tickSize = parseFloat(this.exchangeInfo[symbol].filters.PRICE_FILTER.tickSize);
+      const stepSize = parseFloat(this.exchangeInfo[symbol].filters.LOT_SIZE.stepSize);
+      
+      // Properly round price to valid tick size increments
+      const rawStopPrice = parseFloat(stopPrice);
+      const tickSizeDecimals = (tickSize.toString().split('.')[1] || '').length;
+      const roundedStopPrice = Math.floor(rawStopPrice / tickSize) * tickSize;
+      const adjustedStopPrice = roundedStopPrice.toFixed(tickSizeDecimals);
+      
+      // Properly round quantity to valid step size increments
+      const rawQuantity = parseFloat(quantity);
+      const stepSizeDecimals = (stepSize.toString().split('.')[1] || '').length;
+      const roundedQuantity = Math.floor(rawQuantity / stepSize) * stepSize;
+      const adjustedQuantity = roundedQuantity.toFixed(stepSizeDecimals);
+      
+      logger.info(`Price precision for ${symbol}: ${pricePrecision}, Quantity precision: ${quantityPrecision}`);
+      logger.info(`Raw price: ${rawStopPrice} -> Adjusted: ${adjustedStopPrice}, Raw quantity: ${rawQuantity} -> Adjusted: ${adjustedQuantity}`);
       
       const orderData = {
         symbol,
