@@ -42,7 +42,7 @@ module.exports = {
   marketScanInterval: 120000, // 2 dakika
   minPriceMovement: 0.0001, // Minimum fiyat hareketi
   limitOrderTolerance: 0.005, // %0.5 mesafe toleransı
-  maxOpenPositions: 5, // Açık pozisyon limiti
+  maxOpenPositions: 15, // Açık pozisyon limiti
   topSymbols: [
     'VANAUSDT', 'MEUSDT', 'PENGUUSDT', 'THEUSDT', 'MORPHOUSDT',
     'VANRYUSDT', 'MOVEUSDT', 'NEIROUSDT', 'AVAXUSDT', 'BLURUSDT',
