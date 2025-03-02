@@ -96,6 +96,43 @@ const path = require('path');
       }
     });
     
+    // Manuel pozisyonları işaretlemek için API 
+    app.post('/api/positions/set-managed', async (req, res) => {
+      try {
+        const { symbol, isManaged } = req.body;
+        
+        if (!symbol) {
+          return res.status(400).json({ error: 'Symbol is required' });
+        }
+        
+        // Pozisyonu bul
+        const position = await Position.findOne({ 
+          where: { symbol, isActive: true } 
+        });
+        
+        if (!position) {
+          return res.status(404).json({ error: `No active position found for ${symbol}` });
+        }
+        
+        // isManaged değerini güncelle
+        position.isManaged = !!isManaged; // Boolean'a çevir
+        await position.save();
+        
+        // Log
+        const action = position.isManaged ? "managed" : "manual (monitored only)";
+        logger.info(`Position ${symbol} marked as ${action}`);
+        
+        res.json({ 
+          symbol, 
+          isManaged: position.isManaged,
+          message: `Position ${symbol} is now ${action}` 
+        });
+      } catch (error) {
+        logger.error(`Error updating position managed status: ${error.message}`);
+        res.status(500).json({ error: error.message });
+      }
+    });
+    
     // Start web server
     app.listen(PORT, () => {
       logger.info(`Web interface started on port ${PORT}`);

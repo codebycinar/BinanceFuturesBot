@@ -86,6 +86,12 @@ module.exports = (sequelize, DataTypes) => {
             defaultValue: 0,
             comment: 'Position hold time in minutes',
         },
+        isManaged: {
+            type: DataTypes.BOOLEAN,
+            defaultValue: true,
+            allowNull: false,
+            comment: 'Bot tarafından yönetilen pozisyonlar true, manuel pozisyonlar false olacak',
+        },
     });
     return Position;
 };

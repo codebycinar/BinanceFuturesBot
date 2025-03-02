@@ -76,22 +76,36 @@ async function managePosition(position, candles) {
     const entryPrice = position.entryPrices[0];
     const pnlPercent = ((currentPrice - entryPrice) / entryPrice * 100).toFixed(2);
     
+    // Pozisyon yönetilmeyen bir pozisyon mu?
+    const isManaged = position.isManaged !== false; // undefined veya null ise de true olarak kabul et
+    const managementStatus = isManaged ? "Managed" : "Monitored only (manual)";
+    
     logger.info(`Checking position for ${position.symbol}:
         - Current Price: ${currentPrice}
         - Bollinger Bands: Upper=${upper}, Lower=${lower}, Basis=${bollingerBands.basis}
         - Entry Price: ${entryPrice}
         - Current PnL: ${pnlPercent}%
+        - Management: ${managementStatus}
     `);
 
-    // Pozisyon kapatma kontrolü
-    if (position.entries > 0 && currentPrice > upper) {
-        logger.info(`Closing LONG position for ${position.symbol}. Price above upper Bollinger band.`);
-        await closePosition(position.symbol, "SELL", position, currentPrice);
-        return;
-    } else if (position.entries < 0 && currentPrice < lower) {
-        logger.info(`Closing SHORT position for ${position.symbol}. Price below lower Bollinger band.`);
-        await closePosition(position.symbol, "BUY", position, currentPrice);
-        return;
+    // Pozisyon kapatma kontrolü - sadece yönetilen pozisyonlar için
+    if (isManaged) {
+        if (position.entries > 0 && currentPrice > upper) {
+            logger.info(`Closing LONG position for ${position.symbol}. Price above upper Bollinger band.`);
+            await closePosition(position.symbol, "SELL", position, currentPrice);
+            return;
+        } else if (position.entries < 0 && currentPrice < lower) {
+            logger.info(`Closing SHORT position for ${position.symbol}. Price below lower Bollinger band.`);
+            await closePosition(position.symbol, "BUY", position, currentPrice);
+            return;
+        }
+    } else {
+        // Pozisyon manuel olarak yönetiliyor, sadece sinyal bilgisi ver
+        if (position.entries > 0 && currentPrice > upper) {
+            logger.info(`⚠️ SIGNAL: LONG position ${position.symbol} is above upper Bollinger band (${upper.toFixed(4)}). Consider closing.`);
+        } else if (position.entries < 0 && currentPrice < lower) {
+            logger.info(`⚠️ SIGNAL: SHORT position ${position.symbol} is below lower Bollinger band (${lower.toFixed(4)}). Consider closing.`);
+        }
     }
 
     // Bir sonraki adıma geçiş
