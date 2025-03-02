@@ -176,12 +176,25 @@ class BinanceService {
    */
   async placeStopLossOrder({ symbol, side, quantity, stopPrice, positionSide }) {
     try {
+      // Get exchange info if not already loaded
+      if (!this.exchangeInfo) {
+        await this.getExchangeInfo();
+      }
+      
+      // Get price and quantity precision for the symbol
+      const pricePrecision = this.getPricePrecision(symbol);
+      const quantityPrecision = this.getQuantityPrecision(symbol);
+      
+      // Adjust the price and quantity to the correct precision
+      const adjustedStopPrice = parseFloat(stopPrice).toFixed(pricePrecision);
+      const adjustedQuantity = parseFloat(quantity).toFixed(quantityPrecision);
+      
       const orderData = {
         symbol,
         side,
         type: 'STOP_MARKET',
-        stopPrice: stopPrice.toString(),
-        quantity: quantity.toString(),
+        stopPrice: adjustedStopPrice,
+        quantity: adjustedQuantity,
         positionSide,
         reduceOnly: true, // Pozisyonu kapatmak için
       };
@@ -196,12 +209,25 @@ class BinanceService {
   // Take Profit Emiri
   async placeTakeProfitOrder({ symbol, side, quantity, stopPrice, positionSide }) {
     try {
+      // Get exchange info if not already loaded
+      if (!this.exchangeInfo) {
+        await this.getExchangeInfo();
+      }
+      
+      // Get price and quantity precision for the symbol
+      const pricePrecision = this.getPricePrecision(symbol);
+      const quantityPrecision = this.getQuantityPrecision(symbol);
+      
+      // Adjust the price and quantity to the correct precision
+      const adjustedStopPrice = parseFloat(stopPrice).toFixed(pricePrecision);
+      const adjustedQuantity = parseFloat(quantity).toFixed(quantityPrecision);
+      
       const orderData = {
         symbol,
         side,
         type: 'TAKE_PROFIT_MARKET',
-        stopPrice: stopPrice.toString(),
-        quantity: quantity.toString(),
+        stopPrice: adjustedStopPrice,
+        quantity: adjustedQuantity,
         positionSide,
         reduceOnly: true, // Pozisyonu kapatmak için
       };
