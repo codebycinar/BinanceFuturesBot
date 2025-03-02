@@ -255,8 +255,8 @@ class BinanceService {
         symbol,
         side,
         type: 'TAKE_PROFIT_MARKET',
-        stopPrice: stopPrice.toString(),
-        quantity: quantity.toString(),
+        stopPrice: adjustedStopPrice,
+        quantity: adjustedQuantity,
         positionSide
       };
       logger.info(`Placing Take Profit order for ${symbol}:`, orderData);
