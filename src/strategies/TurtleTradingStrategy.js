@@ -316,6 +316,105 @@ class TurtleTradingStrategy {
             return 0;
         }
     }
+    
+    async analyzeMarketConditions(mtfData, symbol) {
+        try {
+            const preferredTimeframe = this.preferredTimeframe || '4h';
+            const candles = mtfData.candles[preferredTimeframe] || [];
+            
+            if (!candles || candles.length < 50) {
+                logger.warn(`Not enough ${preferredTimeframe} candles for ${symbol} to analyze market conditions`);
+                return {
+                    trend: 'NEUTRAL',
+                    trendStrength: 50,
+                    volatility: 'MEDIUM',
+                    marketType: 'RANGING',
+                    volume: 'NORMAL'
+                };
+            }
+            
+            // Donchian Kanallarını hesapla
+            const entryDonchian = this.calculateDonchianChannel(candles, this.parameters.entryChannel);
+            
+            // ATR hesapla - volatilite için
+            const atr = this.calculateATR(candles, this.parameters.atrPeriod);
+            const currentPrice = parseFloat(candles[candles.length - 1].close);
+            const volatilityPercent = (atr / currentPrice) * 100;
+            
+            // Hareketli ortalamalar
+            const sma50 = this.calculateSMA(candles, 50);
+            const sma200 = this.calculateSMA(candles, 200);
+            
+            // Trend belirleme
+            let trend = 'NEUTRAL';
+            let trendStrength = 50;
+            
+            if (currentPrice > sma50 && sma50 > sma200) {
+                // Güçlü yukarı trend
+                trend = 'UP';
+                const distanceFromSMA = ((currentPrice - sma50) / sma50) * 100;
+                trendStrength = Math.min(90, 50 + distanceFromSMA * 5);
+            } else if (currentPrice < sma50 && sma50 < sma200) {
+                // Güçlü aşağı trend
+                trend = 'DOWN';
+                const distanceFromSMA = ((sma50 - currentPrice) / sma50) * 100;
+                trendStrength = Math.min(90, 50 + distanceFromSMA * 5);
+            } else if (currentPrice > sma50 && sma50 < sma200) {
+                // Potansiyel trend değişimi (aşağıdan yukarıya)
+                trend = 'UP_REVERSAL';
+                trendStrength = 60;
+            } else if (currentPrice < sma50 && sma50 > sma200) {
+                // Potansiyel trend değişimi (yukarıdan aşağıya)
+                trend = 'DOWN_REVERSAL';
+                trendStrength = 60;
+            }
+            
+            // Volatilite sınıflandırma
+            let volatility = 'MEDIUM';
+            if (volatilityPercent > 2.5) volatility = 'HIGH';
+            else if (volatilityPercent < 1.0) volatility = 'LOW';
+            
+            // Market tipi belirleme
+            let marketType = 'RANGING';
+            if (trend === 'UP' && trendStrength > 70) marketType = 'TRENDING_UP';
+            else if (trend === 'DOWN' && trendStrength > 70) marketType = 'TRENDING_DOWN';
+            else if (trend.includes('REVERSAL')) marketType = 'REVERSAL';
+            
+            // Hacim analizi
+            const volumes = candles.slice(-20).map(c => parseFloat(c.volume));
+            const avgVolume = volumes.slice(0, -1).reduce((sum, vol) => sum + vol, 0) / (volumes.length - 1);
+            const currentVolume = volumes[volumes.length - 1];
+            
+            let volume = 'NORMAL';
+            if (currentVolume > avgVolume * 1.5) volume = 'HIGH';
+            else if (currentVolume < avgVolume * 0.5) volume = 'LOW';
+            
+            // Sonuçları döndür
+            return {
+                trend,
+                trendStrength,
+                volatility,
+                marketType,
+                volume,
+                indicators: {
+                    entryDonchian,
+                    atr,
+                    volatilityPercent,
+                    sma50,
+                    sma200
+                }
+            };
+        } catch (error) {
+            logger.error(`Error analyzing market conditions for ${symbol}:`, error);
+            return {
+                trend: 'NEUTRAL',
+                trendStrength: 50,
+                volatility: 'MEDIUM',
+                marketType: 'RANGING',
+                volume: 'NORMAL'
+            };
+        }
+    }
 }
 
 module.exports = TurtleTradingStrategy;
