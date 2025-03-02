@@ -260,6 +260,70 @@ class OrderService {
     const notionalFilter = symbolInfo.filters.find(f => f.filterType === 'MIN_NOTIONAL');
     return notionalFilter ? parseFloat(notionalFilter.minNotional) : 5; // Varsayılan değer
   }
+  
+  /**
+   * Stop-Loss emri (Stop-Market) oluşturur
+   */
+  async placeStopLossOrder({ symbol, side, quantity, stopPrice, price, positionSide }) {
+    try {
+      // Parametre kontrolü
+      if (!symbol || !side || !quantity || !stopPrice) {
+        logger.error(`Missing required parameters for stop loss order: Symbol=${symbol}, Side=${side}, Quantity=${quantity}, StopPrice=${stopPrice}`);
+        throw new Error('Missing required parameters for stop loss order');
+      }
+      
+      logger.info(`Placing Stop Loss order for ${symbol}:
+        - Side: ${side}
+        - Quantity: ${quantity}
+        - Stop Price: ${stopPrice}
+        - Position Side: ${positionSide}
+      `);
+      
+      // BinanceService üzerinden stop loss emri verme
+      return await this.binanceService.placeStopLossOrder({
+        symbol,
+        side,
+        quantity,
+        stopPrice, 
+        positionSide
+      });
+    } catch (error) {
+      logger.error(`Error placing stop loss order for ${symbol}:`, error);
+      throw error;
+    }
+  }
+  
+  /**
+   * Take-Profit emri (Take-Profit-Market) oluşturur
+   */
+  async placeTakeProfitOrder({ symbol, side, quantity, stopPrice, price, positionSide }) {
+    try {
+      // Parametre kontrolü
+      if (!symbol || !side || !quantity || !stopPrice) {
+        logger.error(`Missing required parameters for take profit order: Symbol=${symbol}, Side=${side}, Quantity=${quantity}, StopPrice=${stopPrice}`);
+        throw new Error('Missing required parameters for take profit order');
+      }
+      
+      logger.info(`Placing Take Profit order for ${symbol}:
+        - Side: ${side}
+        - Quantity: ${quantity}
+        - Stop Price: ${stopPrice}
+        - Position Side: ${positionSide}
+      `);
+      
+      // BinanceService üzerinden take profit emri verme
+      return await this.binanceService.placeTakeProfitOrder({
+        symbol,
+        side,
+        quantity,
+        stopPrice,
+        positionSide
+      });
+    } catch (error) {
+      logger.error(`Error placing take profit order for ${symbol}:`, error);
+      throw error;
+    }
+  }
 
   async closePosition(symbol, side, quantity, positionSide) {
     try {
