@@ -34,7 +34,9 @@ async function positionManager() {
 
         for (const position of positions) {
             if (!position.allocation) {
-                position.allocation = config.static_position_size || 0.01; // Varsayılan değer
+                position.allocation = config.static_position_size || 100; // Varsayılan değer
+                position.totalAllocation = position.allocation;
+                await position.save();
                 logger.warn(`Allocation for ${position.symbol} is null. Setting default allocation: ${position.allocation}`);
             }
 
@@ -93,34 +95,44 @@ async function managePosition(position, candles) {
     }
 
     // Bir sonraki adıma geçiş
-    const step = position.step;
-    const allocation = config.strategy.parameters.allocation
-        ? config.strategy.parameters.allocation[step - 1]
-        : config.static_position_size;
-
-    if (!allocation) {
-        logger.warn(`Allocation value is undefined for step ${step} in strategy parameters.`);
+    const step = position.step || 1;
+    let allocation = position.allocation || config.static_position_size || 100;
+    
+    // Eğer config.strategy.allocation tanımlıysa kullan
+    if (config.strategy && config.strategy.allocation && Array.isArray(config.strategy.allocation)) {
+        const stepIndex = step - 1;
+        if (stepIndex >= 0 && stepIndex < config.strategy.allocation.length) {
+            const allocationPercentage = config.strategy.allocation[stepIndex];
+            allocation = (allocationPercentage * position.totalAllocation) || allocation;
+        }
+    }
+    
+    logger.info(`Using allocation ${allocation} USDT for step ${step} of ${position.symbol}`);
+    
+    // Pozisyonun bir sonraki kontrol zamanını ayarla
+    position.nextCandleCloseTime = getNextCandleCloseTime('1h');
+    await position.save();
+    
+    // Not: Bu kısım yorumlanmıştır çünkü otomatik isteklerin yapılması şu an kapalıdır
+    /*
+    const quantity = await binanceService.calculateQuantity(position.symbol, allocation);
+    if (quantity <= 0) {
+        logger.warn(`Invalid quantity for ${position.symbol}. Skipping order.`);
         return;
     }
-
-    const quantity = await this.orderService.calculateStaticPositionSize(position.symbol, allocation);
-    if (quantity === 0) {
-        logger.warn(`Static position size could not be calculated for ${position.symbol}. Skipping step ${step}.`);
-        return;
-    }
-
-    await this.orderService.placeMarketOrder({
+    
+    await binanceService.placeMarketOrder({
         symbol: position.symbol,
         side: position.entries > 0 ? 'BUY' : 'SELL',
         quantity,
         positionSide: position.entries > 0 ? 'LONG' : 'SHORT',
     });
-
-    logger.info(`Step ${step} executed for ${position.symbol} with quantity ${quantity}.`);
-
-    position.step += 1;
-    position.nextCandleCloseTime = this.getNextCandleCloseTime('1h');
+    
+    position.step = step + 1;
     await position.save();
+    */
+
+    // Şu an için sadece pozisyonu izliyoruz, aktif işlem yapmıyoruz
 }
 
 function getNextCandleCloseTime(timeframe) {
