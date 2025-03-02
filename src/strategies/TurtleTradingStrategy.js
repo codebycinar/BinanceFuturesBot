@@ -7,8 +7,8 @@ const config = require('../config/config');
 class TurtleTradingStrategy {
     constructor(config = {}) {
         this.parameters = {
-            entryChannel: 20,    // 20 günlük kanal (giriş sinyali için)
-            exitChannel: 10,     // 10 günlük kanal (çıkış sinyali için)
+            entryChannel: 20,    // 20 periyotluk kanal (giriş sinyali için)
+            exitChannel: 10,     // 10 periyotluk kanal (çıkış sinyali için)
             atrPeriod: 14,       // ATR periyodu
             riskPercentage: 1,   // Risk yüzdesi
             atrMultiplier: 2,    // Stop loss için ATR çarpanı
@@ -16,8 +16,8 @@ class TurtleTradingStrategy {
             profitMultiplier: 3   // Risk:Ödül oranını 1:3'e çıkardık
         };
         
-        // Turtle Trading uzun vadeli bir strateji olduğu için günlük zaman dilimi tercih edilir
-        this.preferredTimeframe = config.preferredTimeframe || '1d';
+        // 4 saatlik zaman dilimini kullanacağız
+        this.preferredTimeframe = config.strategy.timeframe || '4h';
     }
     
     async initialize() {

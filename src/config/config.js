@@ -17,7 +17,7 @@ module.exports = {
     stochasticSignalPeriod: 3, // Stochastic sinyal periyodu
     atrLookback: 21, // ATR yön kontrolü için bakılacak mum sayısı
     allocation: [0.2, 0.3, 0.5], // İlk, ikinci ve üçüncü alımlar için bütçe oranları
-    timeframe: '1h',
+    timeframe: '4h', // Turtle Trading için 4h çerçevesini kullan
     limit: 100,
     keyValue: 2,               // ATR çarpanı
     riskReward: 3,             // Risk/Kar oranı

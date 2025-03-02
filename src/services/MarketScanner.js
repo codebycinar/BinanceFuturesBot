@@ -1,6 +1,6 @@
 // services/MarketScanner.js
 
-const AdaptiveStrategy = require('../strategies/AdaptiveStrategy');
+const TurtleTradingStrategy = require('../strategies/TurtleTradingStrategy');
 const config = require('../config/config');
 const logger = require('../utils/logger');
 const { models } = require('../db/db');
@@ -19,7 +19,7 @@ class MarketScanner {
         this.orderService = orderService;
         this.mtfService = mtfService;
         this.performanceTracker = performanceTracker;
-        this.strategy = new AdaptiveStrategy(binanceService);
+        this.strategy = new TurtleTradingStrategy(); // Sadece Turtle Trading Stratejisini kullan
         this.positionStates = {};
         this.weakSignalBuffer = []; // Zayıf sinyalleri gruplamak için buffer
         this.weakSignalBatchSize = 5; // Her mesajda kaç sinyal birleştirileceği
@@ -28,7 +28,7 @@ class MarketScanner {
     
     async initialize() {
         await this.strategy.initialize();
-        logger.info('Market Scanner initialized with Adaptive Strategy');
+        logger.info('Market Scanner initialized with Turtle Trading Strategy');
     }
 
     /**
