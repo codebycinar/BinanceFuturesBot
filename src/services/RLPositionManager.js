@@ -459,15 +459,24 @@ Size: $${positionSize.toFixed(2)}`;
       logger.info(`Starting historical training for ${symbol} with ${days} days of data`);
       this.sendTelegramMessage(`🧠 Starting RL training for ${symbol} with ${days} days of data`);
       
-      // Günlük mum verisini al
+      // Günlük mum verisini al (bugünden geçmişe doğru)
+      const endTime = Date.now();
+      const startTime = endTime - (days * 24 * 60 * 60 * 1000); // days günlük veri (milisaniye cinsinden)
+      
+      logger.info(`Fetching daily candles from ${new Date(startTime).toISOString()} to ${new Date(endTime).toISOString()}`);
+      
       const dailyCandles = await this.binanceService.getCandles(
         symbol, 
         '1d', 
-        days
+        days,
+        startTime,
+        endTime
       );
       
-      if (!dailyCandles || dailyCandles.length < days * 0.8) {
-        logger.warn(`Not enough daily candles for ${symbol}, got ${dailyCandles.length}/${days}`);
+      if (!dailyCandles || dailyCandles.length < days * 0.5) { // En az %50 veri olsun
+        const errorMsg = `Not enough daily candles for ${symbol}, got ${dailyCandles.length}/${days}`;
+        logger.warn(errorMsg);
+        this.sendTelegramMessage(`⚠️ ${errorMsg}`);
         return false;
       }
       
@@ -486,6 +495,8 @@ Size: $${positionSize.toFixed(2)}`;
         const dayEnd = new Date(day);
         dayEnd.setUTCHours(23, 59, 59, 999);
         
+        logger.info(`Fetching 15m candles for ${symbol} on ${dayStart.toISOString().split('T')[0]}`);
+        
         // 15 dakikalık mumları al (maksimum 96 mum - günde 24 saat * 4 15-dakikalık dilim)
         const intraday15mCandles = await this.binanceService.getCandles(
           symbol, 
@@ -494,6 +505,9 @@ Size: $${positionSize.toFixed(2)}`;
           dayStart.getTime(),
           dayEnd.getTime()
         );
+        
+        logger.info(`Received ${intraday15mCandles.length} 15m candles for ${symbol} on ${dayStart.toISOString().split('T')[0]}`);
+        
         
         if (!intraday15mCandles || intraday15mCandles.length < 20) {
           logger.warn(`Not enough 15m candles for ${symbol} on ${day.toISOString().split('T')[0]}, skipping`);

@@ -66,20 +66,43 @@ class BinanceService {
   }
 
   /**
-   * 1m mumlarını alma
+   * Mumları alma
+   * @param {string} symbol - İşlem sembolü (örn. BTCUSDT)
+   * @param {string} interval - Zaman dilimi (örn. 1m, 5m, 15m, 1h, 4h, 1d)
+   * @param {number} limit - Alınacak mum sayısı
+   * @param {number} startTime - Başlangıç zamanı (opsiyonel)
+   * @param {number} endTime - Bitiş zamanı (opsiyonel)
    */
-  async getCandles(symbol, interval = '1h', limit = 100) {
+  async getCandles(symbol, interval = '1h', limit = 100, startTime = null, endTime = null) {
     try {
-      const candles = await this.client.futuresCandles({ symbol, interval, limit });
-      return candles.map(c => ({
-        open: c.open,
-        high: c.high,
-        low: c.low,
-        close: c.close,
-        volume: c.volume,
+      // Fiyat verisini almak için parametreleri hazırla
+      const params = {
+        symbol,
+        interval,
+        limit
+      };
+      
+      // Opsiyonel başlangıç ve bitiş zamanları
+      if (startTime) params.startTime = startTime;
+      if (endTime) params.endTime = endTime;
+
+      logger.info(`Fetching candles for ${symbol}, interval: ${interval}, limit: ${limit}`);
+      
+      // Binance API'sinden mum verisini al
+      const candles = await this.client.futuresCandles(params);
+      
+      // Veriyi dönüştür
+      const formattedCandles = candles.map(c => ({
+        open: parseFloat(c.open),
+        high: parseFloat(c.high),
+        low: parseFloat(c.low),
+        close: parseFloat(c.close),
+        volume: parseFloat(c.volume),
         timestamp: c.closeTime,
-      }))
-        .filter(c => !isNaN(c.close));
+      })).filter(c => !isNaN(c.close));
+      
+      logger.info(`Received ${formattedCandles.length} candles for ${symbol}`);
+      return formattedCandles;
     } catch (error) {
       logger.error(`Error fetching candles for ${symbol}:`, error);
       return [];
