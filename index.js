@@ -76,8 +76,28 @@ Active RL Positions: ${activePositions}
     bot.command('rl_train', async (ctx) => {
       const args = ctx.message.text.split(' ');
       
+      // Eğer parametre yoksa veya "all" parametresi varsa, tüm sembolleri eğit
+      if (args.length === 1 || (args.length === 2 && args[1].toLowerCase() === 'all')) {
+        const days = 30; // Varsayılan 30 gün
+        ctx.reply(`🧠 Starting training for ALL symbols with ${days} days of historical data...`);
+        
+        try {
+          if (!rlBot) {
+            rlBot = new RLPositionManager();
+            await rlBot.binanceService.initialize();
+          }
+          
+          rlBot.trainAllSymbols(days);
+        } catch (error) {
+          logger.error('Error starting training:', error);
+          ctx.reply(`❌ Error starting training: ${error.message}`);
+        }
+        return;
+      }
+      
+      // Belirli bir sembol için eğitim
       if (args.length !== 3) {
-        ctx.reply('⚠️ Usage: /rl_train SYMBOL DAYS (example: /rl_train BTCUSDT 30)');
+        ctx.reply('⚠️ Usage: /rl_train SYMBOL DAYS (example: /rl_train BTCUSDT 30) or /rl_train all');
         return;
       }
       
@@ -108,10 +128,11 @@ Active RL Positions: ${activePositions}
     bot.command('help', (ctx) => {
       ctx.reply(`
 Binance Futures Bot Commands:
-/rl_start - Start the RL trading bot
+/rl_start - Start the RL trading bot (will scan markets and make trades)
 /rl_stop - Stop the RL trading bot
-/rl_status - Check RL bot status
-/rl_train SYMBOL DAYS - Train the RL bot (example: /rl_train BTCUSDT 30)
+/rl_status - Check RL bot status and active positions
+/rl_train all - Train all symbols using 30 days of data
+/rl_train SYMBOL DAYS - Train a specific symbol (example: /rl_train BTCUSDT 30)
 /help - Show this help message
       `);
     });

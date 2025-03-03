@@ -479,12 +479,74 @@ Size: $${positionSize.toFixed(2)}`;
   }
   
   /**
+   * Tüm izlenen semboller için eğitim yapar
+   */
+  async trainAllSymbols(days = 30) {
+    try {
+      const symbols = this.watchlist;
+      
+      logger.info(`Starting training for all ${symbols.length} symbols with ${days} days of data`);
+      this.sendTelegramMessage(`🧠 Starting training for all ${symbols.length} symbols with ${days} days of data`);
+      
+      const results = {
+        totalTrades: 0,
+        winningTrades: 0,
+        symbols: {}
+      };
+      
+      // Her sembol için eğitim yap
+      for (const symbol of symbols) {
+        logger.info(`Training symbol: ${symbol}`);
+        const result = await this.trainOnHistoricalData(symbol, days, false); // suppressMessages=false
+        
+        if (result) {
+          results.totalTrades += result.totalTrades;
+          results.winningTrades += result.winCount;
+          results.symbols[symbol] = {
+            trades: result.totalTrades,
+            winRate: result.winRate,
+            profitLossRatio: result.profitLossRatio
+          };
+        }
+      }
+      
+      // Genel sonuçları hesapla
+      const totalWinRate = results.totalTrades > 0 ? 
+        (results.winningTrades / results.totalTrades) * 100 : 0;
+      
+      // Sonuçları log'la ve Telegram'a gönder
+      const message = `✅ Training completed for all symbols!
+Total Trades: ${results.totalTrades}
+Winning Trades: ${results.winningTrades}
+Overall Win Rate: ${totalWinRate.toFixed(2)}%
+
+Performance by Symbol:
+${Object.entries(results.symbols)
+  .filter(([_, data]) => data.trades > 0)
+  .sort((a, b) => b[1].winRate - a[1].winRate)
+  .map(([sym, data]) => `${sym}: ${data.trades} trades, ${(data.winRate * 100).toFixed(2)}% win rate`)
+  .join('\n')}`;
+      
+      logger.info(message);
+      this.sendTelegramMessage(message);
+      
+      return results;
+    } catch (error) {
+      logger.error(`Error training all symbols:`, error);
+      this.sendTelegramMessage(`❌ Error training all symbols: ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
    * Seçilen sembol için geçmiş verileri kullanarak bir RL stratejisini eğitir
    */
-  async trainOnHistoricalData(symbol, days = 30) {
+  async trainOnHistoricalData(symbol, days = 30, suppressMessages = false) {
     try {
       logger.info(`Starting historical training for ${symbol} with ${days} days of data`);
-      this.sendTelegramMessage(`🧠 Starting RL training for ${symbol} with ${days} days of data`);
+      if (!suppressMessages) {
+        this.sendTelegramMessage(`🧠 Starting RL training for ${symbol} with ${days} days of data`);
+      }
       
       // Günlük mum verisini al (bugünden geçmişe doğru)
       const endTime = Date.now();
@@ -503,7 +565,9 @@ Size: $${positionSize.toFixed(2)}`;
       if (!dailyCandles || dailyCandles.length < days * 0.5) { // En az %50 veri olsun
         const errorMsg = `Not enough daily candles for ${symbol}, got ${dailyCandles.length}/${days}`;
         logger.warn(errorMsg);
-        this.sendTelegramMessage(`⚠️ ${errorMsg}`);
+        if (!suppressMessages) {
+          this.sendTelegramMessage(`⚠️ ${errorMsg}`);
+        }
         return false;
       }
       
@@ -691,12 +755,18 @@ Size: $${positionSize.toFixed(2)}`;
         Win Rate: ${winRate.toFixed(2)}%
       `);
       
-      this.sendTelegramMessage(`✅ RL training completed for ${symbol}:
+      // Telegram'a mesaj gönder - suppress edilmemişse
+      if (!suppressMessages) {
+        this.sendTelegramMessage(`✅ RL training completed for ${symbol}:
 Total Trades: ${totalTrades}
 Winning Trades: ${successfulTrades}
 Win Rate: ${winRate.toFixed(2)}%`);
+      }
       
-      return true;
+      // Performans verilerini al
+      const performance = await this.rlModelService.getStrategyPerformance(symbol, this.strategy.name);
+      
+      return performance;
     } catch (error) {
       logger.error(`Error training model for ${symbol}:`, error);
       this.sendTelegramMessage(`❌ Error in RL training for ${symbol}: ${error.message}`);
