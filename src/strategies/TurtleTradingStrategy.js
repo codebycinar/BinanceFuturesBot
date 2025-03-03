@@ -150,22 +150,38 @@ class TurtleTradingStrategy {
                 if (existingPositions.hasLong) {
                     // Ek giriş (pyramiding) sinyali - pozisyona ekleme
                     if (existingPositions.longEntries < 4) {
-                        signal = 'ADD_BUY';
-                        logger.info(`Turtle Trading ADD LONG signal for ${symbol} at ${currentClose} (entry #${existingPositions.longEntries + 1})`);
+                        // Son girişten beri yeterli zaman geçmiş mi kontrol et
+                        const canEnterNewPosition = await this.canAddNewPosition(symbol, 'LONG');
+                        
+                        if (canEnterNewPosition) {
+                            signal = 'ADD_BUY';
+                            logger.info(`Turtle Trading ADD LONG signal for ${symbol} at ${currentClose} (entry #${existingPositions.longEntries + 1})`);
+                        } else {
+                            logger.info(`Waiting for next timeframe to add to LONG position for ${symbol}`);
+                            signal = 'NEUTRAL';
+                        }
                     } else {
                         logger.info(`Maximum long entries (4) reached for ${symbol}, not adding more`);
                         signal = 'NEUTRAL';
                     }
                 } else {
-                    // Yeni giriş sinyali
-                    signal = volumeConfirmation ? 'BUY' : 'WEAK_BUY';
+                    // Aynı zaman diliminde bir önceki işlemimiz var mı kontrol et
+                    const canEnterNewPosition = await this.canEnterNewTimeframe(symbol);
                     
-                    if (!volumeConfirmation) {
-                        unmetConditions.push('Volume confirmation missing');
+                    if (canEnterNewPosition) {
+                        // Yeni giriş sinyali
+                        signal = volumeConfirmation ? 'BUY' : 'WEAK_BUY';
+                        
+                        if (!volumeConfirmation) {
+                            unmetConditions.push('Volume confirmation missing');
+                        }
+                        
+                        logger.info(`Turtle Trading LONG signal for ${symbol} at ${currentClose}`);
+                        logger.info(`Donchian Upper Breakout: ${entryDonchian.upper}`);
+                    } else {
+                        logger.info(`Already opened a position in this timeframe for ${symbol}, waiting for next timeframe`);
+                        signal = 'NEUTRAL';
                     }
-                    
-                    logger.info(`Turtle Trading LONG signal for ${symbol} at ${currentClose}`);
-                    logger.info(`Donchian Upper Breakout: ${entryDonchian.upper}`);
                 }
                 
                 // Her durumda stop loss ve take profit hesapla
@@ -177,22 +193,38 @@ class TurtleTradingStrategy {
                 if (existingPositions.hasShort) {
                     // Ek giriş (pyramiding) sinyali - pozisyona ekleme
                     if (existingPositions.shortEntries < 4) {
-                        signal = 'ADD_SELL';
-                        logger.info(`Turtle Trading ADD SHORT signal for ${symbol} at ${currentClose} (entry #${existingPositions.shortEntries + 1})`);
+                        // Son girişten beri yeterli zaman geçmiş mi kontrol et
+                        const canEnterNewPosition = await this.canAddNewPosition(symbol, 'SHORT');
+                        
+                        if (canEnterNewPosition) {
+                            signal = 'ADD_SELL';
+                            logger.info(`Turtle Trading ADD SHORT signal for ${symbol} at ${currentClose} (entry #${existingPositions.shortEntries + 1})`);
+                        } else {
+                            logger.info(`Waiting for next timeframe to add to SHORT position for ${symbol}`);
+                            signal = 'NEUTRAL';
+                        }
                     } else {
                         logger.info(`Maximum short entries (4) reached for ${symbol}, not adding more`);
                         signal = 'NEUTRAL';
                     }
                 } else {
-                    // Yeni giriş sinyali
-                    signal = volumeConfirmation ? 'SELL' : 'WEAK_SELL';
+                    // Aynı zaman diliminde bir önceki işlemimiz var mı kontrol et
+                    const canEnterNewPosition = await this.canEnterNewTimeframe(symbol);
                     
-                    if (!volumeConfirmation) {
-                        unmetConditions.push('Volume confirmation missing');
+                    if (canEnterNewPosition) {
+                        // Yeni giriş sinyali
+                        signal = volumeConfirmation ? 'SELL' : 'WEAK_SELL';
+                        
+                        if (!volumeConfirmation) {
+                            unmetConditions.push('Volume confirmation missing');
+                        }
+                        
+                        logger.info(`Turtle Trading SHORT signal for ${symbol} at ${currentClose}`);
+                        logger.info(`Donchian Lower Breakout: ${entryDonchian.lower}`);
+                    } else {
+                        logger.info(`Already opened a position in this timeframe for ${symbol}, waiting for next timeframe`);
+                        signal = 'NEUTRAL';
                     }
-                    
-                    logger.info(`Turtle Trading SHORT signal for ${symbol} at ${currentClose}`);
-                    logger.info(`Donchian Lower Breakout: ${entryDonchian.lower}`);
                 }
                 
                 // Her durumda stop loss ve take profit hesapla
@@ -294,23 +326,141 @@ class TurtleTradingStrategy {
             });
             
             if (!positions || positions.length === 0) {
-                return { hasLong: false, hasShort: false, longEntries: 0, shortEntries: 0 };
+                return { hasLong: false, hasShort: false, longEntries: 0, shortEntries: 0, lastEntryTime: null };
             }
             
             // Long ve short pozisyonları ayır
             const longPositions = positions.filter(p => p.entries > 0);
             const shortPositions = positions.filter(p => p.entries < 0);
             
+            // Son giriş zamanını belirle
+            const latestLongPosition = longPositions.length > 0 ? 
+                longPositions.reduce((latest, position) => {
+                    // Eğer position.updatedAt varsa ve latest.updatedAt'dan daha yeniyse, bu position'u döndür
+                    return (!latest || new Date(position.updatedAt) > new Date(latest.updatedAt)) ? position : latest;
+                }, null) : null;
+                
+            const latestShortPosition = shortPositions.length > 0 ? 
+                shortPositions.reduce((latest, position) => {
+                    return (!latest || new Date(position.updatedAt) > new Date(latest.updatedAt)) ? position : latest;
+                }, null) : null;
+            
             return {
                 hasLong: longPositions.length > 0,
                 hasShort: shortPositions.length > 0,
                 longEntries: longPositions.length > 0 ? Math.abs(longPositions[0].entries) : 0,
-                shortEntries: shortPositions.length > 0 ? Math.abs(shortPositions[0].entries) : 0
+                shortEntries: shortPositions.length > 0 ? Math.abs(shortPositions[0].entries) : 0,
+                lastLongEntryTime: latestLongPosition ? latestLongPosition.updatedAt : null,
+                lastShortEntryTime: latestShortPosition ? latestShortPosition.updatedAt : null
             };
             
         } catch (error) {
             logger.error(`Error checking existing positions for ${symbol}:`, error);
-            return { hasLong: false, hasShort: false, longEntries: 0, shortEntries: 0 };
+            return { hasLong: false, hasShort: false, longEntries: 0, shortEntries: 0, lastEntryTime: null };
+        }
+    }
+    
+    /**
+     * Son girişten beri yeni bir zaman dilimi geçmiş mi kontrol eder
+     * Her 4 saatlik periyotta sadece 1 pyramiding (ek giriş) yapılabilir
+     */
+    async canAddNewPosition(symbol, direction) {
+        try {
+            const { Position } = require('../db/db').models;
+            
+            // Mevcut pozisyonları kontrol et
+            const positions = await this.checkExistingPositions(symbol);
+            
+            // Yön için son giriş zamanını al
+            const lastEntryTime = direction === 'LONG' ? positions.lastLongEntryTime : positions.lastShortEntryTime;
+            
+            // Eğer daha önce giriş yapılmamışsa, giriş yapılabilir
+            if (!lastEntryTime) return true;
+            
+            // Son girişten bu yana geçen süreyi hesapla
+            const now = new Date();
+            const lastEntry = new Date(lastEntryTime);
+            
+            // Timeframe süresini milisaniye cinsinden hesapla (4 saat = 4 * 60 * 60 * 1000 ms)
+            const timeframeDuration = 4 * 60 * 60 * 1000; // 4 saatlik
+            
+            // Son girişten bu yana bir timeframe (4 saat) geçmiş mi kontrol et
+            const timeSinceLastEntry = now - lastEntry;
+            
+            // Bir sonraki timeframe'in başlangıcını hesapla
+            // Örn: 4 saatlik periyotlar: 00:00, 04:00, 08:00, 12:00, 16:00, 20:00
+            const currentTimeframeStart = new Date(
+                Math.floor(now.getTime() / timeframeDuration) * timeframeDuration
+            );
+            
+            const lastEntryTimeframe = new Date(
+                Math.floor(lastEntry.getTime() / timeframeDuration) * timeframeDuration
+            );
+            
+            // Eğer son giriş ile şu anki giriş farklı timeframe'lerde ise giriş yapılabilir
+            // Örneğin son giriş 04:00-08:00 arasında yapıldıysa, 08:00-12:00 arasında yeni giriş yapılabilir
+            const canEnter = currentTimeframeStart.getTime() > lastEntryTimeframe.getTime();
+            
+            logger.info(`${symbol} ${direction} - Time since last entry: ${timeSinceLastEntry / (60 * 1000)} minutes. Can enter new position: ${canEnter}`);
+            
+            return canEnter;
+            
+        } catch (error) {
+            logger.error(`Error checking if can add new position for ${symbol}:`, error);
+            return false; // Hata durumunda güvenli tarafta kal, yeni giriş yapma
+        }
+    }
+    
+    /**
+     * Yeni pozisyon açmak için zaman dilimini kontrol et
+     * Her 4 saatlik periyotta yeni bir pozisyon açılabilir
+     */
+    async canEnterNewTimeframe(symbol) {
+        try {
+            const { Position } = require('../db/db').models;
+            
+            // Mevcut tüm açık pozisyonları getir
+            const positions = await Position.findAll({
+                where: { 
+                    isActive: true
+                },
+                order: [['createdAt', 'DESC']]
+            });
+            
+            // Son açılan pozisyonu bul
+            const lastPosition = positions.length > 0 ? positions[0] : null;
+            
+            // Hiç pozisyon yoksa, yeni pozisyon açılabilir
+            if (!lastPosition) return true;
+            
+            // Son pozisyonun açılış zamanını al
+            const lastPositionTime = new Date(lastPosition.createdAt);
+            const now = new Date();
+            
+            // Timeframe süresini milisaniye cinsinden hesapla (4 saat = 4 * 60 * 60 * 1000 ms)
+            const timeframeDuration = 4 * 60 * 60 * 1000; // 4 saatlik
+            
+            // Şu anki timeframe'in başlangıcını hesapla
+            const currentTimeframeStart = new Date(
+                Math.floor(now.getTime() / timeframeDuration) * timeframeDuration
+            );
+            
+            // Son pozisyonun açıldığı timeframe'in başlangıcını hesapla
+            const lastPositionTimeframe = new Date(
+                Math.floor(lastPositionTime.getTime() / timeframeDuration) * timeframeDuration
+            );
+            
+            // Eğer son pozisyon ile şu anki giriş farklı timeframe'lerde ise yeni pozisyon açılabilir
+            const canEnter = currentTimeframeStart.getTime() > lastPositionTimeframe.getTime();
+            
+            const timeSinceLastPosition = now - lastPositionTime;
+            logger.info(`${symbol} - Time since last position: ${timeSinceLastPosition / (60 * 1000)} minutes. Can open new position: ${canEnter}`);
+            
+            return canEnter;
+            
+        } catch (error) {
+            logger.error(`Error checking if can enter new timeframe for ${symbol}:`, error);
+            return true; // Hata durumunda yeni pozisyon açılmasına izin ver
         }
     }
     
