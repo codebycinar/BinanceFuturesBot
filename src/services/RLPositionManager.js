@@ -269,7 +269,12 @@ Reason: ${position.exitReason}`;
       // Güvenli bir şekilde miktarı ayarla
       const quantity = this.binanceService.adjustPrecision(baseQuantity, quantityPrecision);
       
-      logger.info(`Using fixed position size for ${symbol}: $${positionSize.toFixed(2)}`);
+      try {
+        logger.info(`Using fixed position size for ${symbol}: $${positionSize.toFixed(2)}`);
+      } catch (e) {
+        logger.info(`Using fixed position size for ${symbol}: $${positionSize}`);
+      }
+      
       logger.info(`Raw quantity: ${baseQuantity}, Adjusted quantity: ${quantity}, Precision: ${quantityPrecision}`);
       
       // Sipariş tipi ve durumları belirle

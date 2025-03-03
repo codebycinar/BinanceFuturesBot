@@ -178,74 +178,111 @@ class BinanceService {
   }
   
   /**
-   * Miktarı belirli bir hassasiyete göre ayarlar
+   * GÜVENLI_MIKTAR: Miktarı belirli bir hassasiyete göre ayarlar
+   * Tamamen sıfırdan yazılmış, toFixed() kullanmayan güvenli bir fonksiyon
    */
   adjustPrecision(value, precision) {
     try {
-      logger.info(`Adjusting precision for value: ${value}, precision: ${precision}`);
-      
-      // Precision değerini kontrol et
-      if (precision === null || precision === undefined || isNaN(precision)) {
-        logger.warn(`Invalid precision value: ${precision}, defaulting to 4`);
-        precision = 4;
-      } else if (typeof precision !== 'number') {
-        precision = parseInt(precision);
+      // 1. Input değerlerini kontrol et ve düzelt
+      if (value === null || value === undefined) {
+        logger.warn(`Null/undefined value provided for precision adjustment`);
+        return "0";
       }
       
-      // Güvenlik kontrolü: precision 0-20 arasında olmalı
-      if (precision < 0 || precision > 20) {
-        logger.warn(`Precision value out of range: ${precision}, clamping to 0-8 range`);
-        precision = Math.max(0, Math.min(8, precision));
-      }
-      
-      // Değeri sayıya dönüştür
+      // String değeri sayıya çevir
       if (typeof value === 'string') {
         value = parseFloat(value);
       }
       
-      // Değer kontrolü
+      // Geçersiz sayı mı?
       if (isNaN(value) || !isFinite(value)) {
-        logger.error(`Invalid value for precision adjustment: ${value}`);
+        logger.warn(`Invalid value for precision adjustment: ${value}`);
         return "0";
       }
       
-      // Sıfır veya çok küçük değerler için
-      if (value < Math.pow(10, -precision)) {
-        logger.warn(`Value too small: ${value}, returning minimum allowed`);
-        return precision > 0 ? "0." + "0".repeat(precision-1) + "1" : "0";
+      // Negatif sayı kontrolü
+      if (value < 0) {
+        logger.warn(`Negative value ${value} for precision adjustment, using absolute value`);
+        value = Math.abs(value);
       }
       
-      // Virgülden sonra precision kadar digit tut
-      const factor = Math.pow(10, precision);
-      const truncated = Math.floor(value * factor) / factor;
+      // 2. Precision değerini kontrol et ve düzelt
+      if (precision === null || precision === undefined || isNaN(precision)) {
+        logger.warn(`Invalid precision value: ${precision}, defaulting to 4`);
+        precision = 4;
+      }
       
-      // Number.toFixed kullanırken hata riskini azalt
+      if (typeof precision !== 'number') {
+        precision = parseInt(precision, 10);
+        if (isNaN(precision)) {
+          logger.warn(`Could not parse precision value, defaulting to 4`);
+          precision = 4;
+        }
+      }
+      
+      // 3. Precision değerini güvenli aralıkta tut
+      const MIN_PRECISION = 0;
+      const MAX_PRECISION = 8;
+      
+      if (precision < MIN_PRECISION || precision > MAX_PRECISION) {
+        const oldPrecision = precision;
+        precision = Math.max(MIN_PRECISION, Math.min(MAX_PRECISION, precision));
+        logger.warn(`Precision value ${oldPrecision} out of range, adjusted to ${precision}`);
+      }
+      
+      // 4. Çok küçük değerleri kontrol et
+      const minAllowed = Math.pow(10, -precision);
+      if (value > 0 && value < minAllowed) {
+        logger.warn(`Value ${value} too small for precision ${precision}, using minimum allowed ${minAllowed}`);
+        
+        // 0.00...01 formatında minimum değer
+        if (precision === 0) {
+          return "1";
+        } else {
+          return "0." + "0".repeat(precision-1) + "1";
+        }
+      }
+      
+      // 5. Sayıyı belirtilen precision'a yuvarla
+      const multiplier = Math.pow(10, precision);
+      const truncatedValue = Math.floor(value * multiplier) / multiplier;
+      
+      // 6. Sayıyı string'e çevir
+      // toFixed() kullanmadan manuel biçimlendirme yapalım
       let result;
-      if (precision <= 0) {
+      
+      if (precision === 0) {
+        // Precision 0 ise sadece tam sayı kısmını al
         result = Math.floor(value).toString();
       } else {
-        // Manuel olarak string formatla
-        let strValue = truncated.toString();
+        // Sayıyı string'e çevir ve decimal kısmını manuel olarak formatla
+        let strValue = truncatedValue.toString();
         
-        // Eğer decimal point yoksa ekle
+        // Decimal point yoksa ekle
         if (!strValue.includes('.')) {
           strValue += '.';
         }
         
-        // Decimal parçasını al
-        const [intPart, decimalPart = ''] = strValue.split('.');
+        // İnt ve decimal kısımlarını al
+        let [intPart, decimalPart = ''] = strValue.split('.');
         
-        // Doğru uzunlukta decimal kısmı oluştur
-        const paddedDecimal = decimalPart.padEnd(precision, '0').slice(0, precision);
+        // Decimal kısmı istenilen uzunluğa getir
+        decimalPart = decimalPart.padEnd(precision, '0');
+        decimalPart = decimalPart.substring(0, precision);
         
-        result = intPart + '.' + paddedDecimal;
+        result = intPart + '.' + decimalPart;
       }
       
-      logger.info(`Precision adjusted: ${value} -> ${result}`);
+      logger.info(`Precision adjusted: ${value} -> ${result} (precision: ${precision})`);
       return result;
     } catch (error) {
-      logger.error(`Error adjusting precision for ${value}:`, error);
-      return "0"; // Güvenli geri dönüş
+      logger.error(`Unexpected error in adjustPrecision: ${error.message}`);
+      // Son çare olarak, değeri stringe çevirip decimal nokta sonrası precision karakter bırak
+      try {
+        return String(Math.abs(value)).substring(0, 10);
+      } catch (e) {
+        return "0";
+      }
     }
   }
 
