@@ -482,10 +482,10 @@ class MarketScanner {
         return new Date(Math.ceil(now.getTime() / ms) * ms);
     }
     async openNewPosition(symbol, signal, entryPrice, stopLoss, takeProfit, allocation, strategyUsed) {
-        // Calculate position size
+        // Calculate position size - Turtle Trading işlemleri için her giriş toplam riskin 1/4'ü olacak
         const positionSize = config.calculate_position_size
-            ? config.riskPerTrade * await this.binanceService.getFuturesBalance()
-            : allocation || config.static_position_size;
+            ? config.riskPerTrade * await this.binanceService.getFuturesBalance() / 4
+            : allocation || config.static_position_size / 4;
 
         // Calculate quantity based on allocation
         const quantity = await this.orderService.calculateStaticPositionSize(symbol, positionSize);
