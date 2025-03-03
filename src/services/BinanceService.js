@@ -181,18 +181,29 @@ class BinanceService {
    * Miktarı belirli bir hassasiyete göre ayarlar
    */
   adjustPrecision(value, precision) {
-    if (typeof precision !== 'number') {
-      precision = parseInt(precision);
-    }
-    
     try {
       logger.info(`Adjusting precision for value: ${value}, precision: ${precision}`);
       
-      // Alternatif 1: LOT_SIZE step size kullanarak
+      // Precision değerini kontrol et
+      if (precision === null || precision === undefined || isNaN(precision)) {
+        logger.warn(`Invalid precision value: ${precision}, defaulting to 4`);
+        precision = 4;
+      } else if (typeof precision !== 'number') {
+        precision = parseInt(precision);
+      }
+      
+      // Güvenlik kontrolü: precision 0-20 arasında olmalı
+      if (precision < 0 || precision > 20) {
+        logger.warn(`Precision value out of range: ${precision}, clamping to 0-8 range`);
+        precision = Math.max(0, Math.min(8, precision));
+      }
+      
+      // Değeri sayıya dönüştür
       if (typeof value === 'string') {
         value = parseFloat(value);
       }
       
+      // Değer kontrolü
       if (isNaN(value) || !isFinite(value)) {
         logger.error(`Invalid value for precision adjustment: ${value}`);
         return "0";
@@ -201,13 +212,34 @@ class BinanceService {
       // Sıfır veya çok küçük değerler için
       if (value < Math.pow(10, -precision)) {
         logger.warn(`Value too small: ${value}, returning minimum allowed`);
-        return (Math.pow(10, -precision)).toFixed(precision);
+        return precision > 0 ? "0." + "0".repeat(precision-1) + "1" : "0";
       }
       
       // Virgülden sonra precision kadar digit tut
       const factor = Math.pow(10, precision);
       const truncated = Math.floor(value * factor) / factor;
-      const result = truncated.toFixed(precision);
+      
+      // Number.toFixed kullanırken hata riskini azalt
+      let result;
+      if (precision <= 0) {
+        result = Math.floor(value).toString();
+      } else {
+        // Manuel olarak string formatla
+        let strValue = truncated.toString();
+        
+        // Eğer decimal point yoksa ekle
+        if (!strValue.includes('.')) {
+          strValue += '.';
+        }
+        
+        // Decimal parçasını al
+        const [intPart, decimalPart = ''] = strValue.split('.');
+        
+        // Doğru uzunlukta decimal kısmı oluştur
+        const paddedDecimal = decimalPart.padEnd(precision, '0').slice(0, precision);
+        
+        result = intPart + '.' + paddedDecimal;
+      }
       
       logger.info(`Precision adjusted: ${value} -> ${result}`);
       return result;
@@ -615,9 +647,22 @@ class BinanceService {
 
   getQuantityPrecision(symbol) {
     if (!this.exchangeInfo || !this.exchangeInfo[symbol]) {
-      throw new Error(`Exchange info for ${symbol} not found.`);
+      logger.warn(`Exchange info for ${symbol} not found, using default precision 3`);
+      return 3; // Varsayılan değer
     }
-    return this.exchangeInfo[symbol].quantityPrecision;
+    
+    // İzin verilen maksimum precision değeri
+    const maxPrecision = 8;
+    
+    const precision = this.exchangeInfo[symbol].quantityPrecision;
+    
+    // Precision değeri çok büyükse sınırla
+    if (precision > maxPrecision) {
+      logger.warn(`Precision value for ${symbol} too high (${precision}), limiting to ${maxPrecision}`);
+      return maxPrecision;
+    }
+    
+    return precision;
   }
 
   async getStepSize(symbol) {

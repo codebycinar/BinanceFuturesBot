@@ -242,19 +242,31 @@ Reason: ${position.exitReason}`;
       const balance = await this.binanceService.getFuturesBalance();
       
       // Exchange bilgilerini al (precision değerleri için)
-      await this.binanceService.getExchangeInfo();
+      try {
+        await this.binanceService.getExchangeInfo();
+      } catch (error) {
+        logger.error(`Failed to get exchange info: ${error.message}`);
+        // Devam et, varsayılan precision değerleri kullanılacak
+      }
       
-      // Daha güvenli bir pozisyon boyutu hesapla
-      // ATR'den bağımsız sabit bir pozisyon boyutu kullan (20 USD)
-      const positionSize = Math.min(20, balance * 0.01); // Bakiyenin en fazla %1'i, maksimum 20 USD
+      // Çok küçük ve güvenli bir pozisyon boyutu kullan
+      // Sabit bir değer: 10 USD maksimum
+      const positionSize = Math.min(10, balance * 0.005); // Bakiyenin en fazla %0.5'i, maksimum 10 USD
       
       // İşlem miktarını hesapla (USD cinsinden pozisyon büyüklüğü / coin fiyatı)
       const baseQuantity = positionSize / currentPrice;
       
-      // Miktar için precision değerlerini al
-      const quantityPrecision = this.binanceService.getQuantityPrecision(symbol);
+      // Miktar için precision değerlerini al - güvenli bir varsayılan kullan
+      let quantityPrecision = 3; // Varsayılan
+      try {
+        quantityPrecision = this.binanceService.getQuantityPrecision(symbol);
+        // Çok büyük değerleri sınırla
+        if (quantityPrecision > 8) quantityPrecision = 8;
+      } catch (error) {
+        logger.warn(`Could not get precise quantity precision for ${symbol}, using default value 3`);
+      }
       
-      // Daha az hassas bir miktar kullan
+      // Güvenli bir şekilde miktarı ayarla
       const quantity = this.binanceService.adjustPrecision(baseQuantity, quantityPrecision);
       
       logger.info(`Using fixed position size for ${symbol}: $${positionSize.toFixed(2)}`);
