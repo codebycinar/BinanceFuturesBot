@@ -18,36 +18,31 @@ class BinanceService {
       apiSecret: config.apiSecret,
       futures: true, // Futures modunu etkinleştir
       useServerTime: true,
-      recvWindow: 10000,
+      recvWindow: 60000, // 60 saniye olarak artırıldı
       //baseUrl: config.testnet ? 'https://testnet.binancefuture.com' : undefined // Testnet URL'si
     });
 
     this.positionSideMode = config.positionSideMode || 'One-Way'; // 'One-Way' veya 'Hedge'
     // Telegram Bot'u tanımla
     this.bot = new TelegramBot(config.telegramBotToken, { polling: false });
-    
-    // Check positisionSideMode and set it
-    this.checkAndSetPositionMode();
   }
   
   /**
    * Check current position mode and set it if needed
+   * NOT: Bu fonksiyon şu anda uygulanabilir değil, Binance API kütüphanesinde ilgili metotlar bulunmuyor
+   * Position modu değişikliği için Binance web arayüzünü kullanın
    */
   async checkAndSetPositionMode() {
     try {
-      // Get current position mode
-      const currentMode = await this.client.futuresPositionMode();
-      const targetMode = this.positionSideMode === 'Hedge';
+      // Uygun API metotları olmadığı için bu işlemi kaldırıyoruz
+      // Position Side Mode'u web arayüzünden manuel olarak yapılandırın
       
-      if (currentMode.dualSidePosition !== targetMode) {
-        // Set position mode to the configured mode
-        await this.client.futuresChangePositionMode({ dualSidePosition: targetMode });
-        logger.info(`Changed position mode to ${targetMode ? 'Hedge' : 'One-Way'} mode`);
-      } else {
-        logger.info(`Position mode already set to ${targetMode ? 'Hedge' : 'One-Way'} mode`);
-      }
+      logger.info(`Using position mode: ${this.positionSideMode}. Please ensure this matches your Binance account settings.`);
+      
+      // Not: Güncel binance-api-node kütüphanesinde 
+      // futuresPositionMode ve futuresChangePositionMode metotları bulunmuyor
     } catch (error) {
-      logger.error('Error checking/setting position mode:', error);
+      logger.error('Error checking position mode:', error);
     }
   }
 
