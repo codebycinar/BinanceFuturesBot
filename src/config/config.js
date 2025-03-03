@@ -24,6 +24,22 @@ module.exports = {
     riskReward: 3,             // Risk/Kar oranı
     leverage: 5,              // Kaldıraç oranı
   },
+  
+  // RL (Reinforcement Learning) Bot yapılandırması
+  rlBot: {
+    timeframe: '15m',          // RL Bot zaman dilimi (15 dakika)
+    autoStart: false,          // Bot başlangıçta otomatik başlamasın
+    riskPerTrade: 2.0,         // RL Bot için işlem başına risk (%2)
+    maxPositions: 3,           // RL Bot için maksimum eşzamanlı pozisyon sayısı
+    learningRate: 0.3,         // Öğrenme oranı (alpha)
+    discountFactor: 0.7,       // Gelecekteki ödüllerin indirim faktörü (gamma)
+    explorationRate: 0.2,      // Keşif oranı (epsilon)
+    defaultStopLoss: 1.0,      // Varsayılan stop loss (%1)
+    defaultTakeProfit: 2.0,    // Varsayılan take profit (%2)
+    supportResistancePeriod: 20, // Destek/Direnç hesaplama periyodu
+    modelsDirectory: 'models'  // RL modellerinin kaydedileceği dizin
+  },
+  
   // Risk ve ödül oranları
   riskPerTrade: 0.01, // Risk per trade (%1 of account)
 
@@ -44,6 +60,13 @@ module.exports = {
   minPriceMovement: 0.0001, // Minimum fiyat hareketi
   limitOrderTolerance: 0.005, // %0.5 mesafe toleransı
   maxOpenPositions: 15, // Açık pozisyon limiti
+  
+  // RL Bot için izlenecek semboller (daha az sayıda sembolle çalışalım)
+  tradingPairs: [
+    'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'AVAXUSDT'
+  ],
+  
+  // Diğer stratejiler için izlenecek semboller
   topSymbols: [
     'VANAUSDT', 'MEUSDT', 'PENGUUSDT', 'THEUSDT', 'MORPHOUSDT',
     'VANRYUSDT', 'MOVEUSDT', 'NEIROUSDT', 'AVAXUSDT', 'BLURUSDT',
@@ -51,4 +74,7 @@ module.exports = {
     'FLOWUSDT', 'MINAUSDT', 'DOTUSDT', 'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'XRPUSDT', 'SOLUSDT',
     'ADAUSDT', 'TRXUSDT', 'LTCUSDT', 'LINKUSDT', 'XLMUSDT',
   ],
+  
+  // RL Bot'u otomatik başlatma ayarı
+  autoStartRLBot: false
 };
