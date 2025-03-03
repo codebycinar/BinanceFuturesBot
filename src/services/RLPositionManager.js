@@ -245,6 +245,14 @@ Reason: ${position.exitReason}`;
       const atr = await this.binanceService.calculateATR(symbol, 14);
       const positionSize = this.strategy.calculatePositionSize(balance, currentPrice, atr);
       
+      // Exchange bilgilerini al (precision değerleri için)
+      await this.binanceService.getExchangeInfo();
+      
+      // İşlem miktarını hesapla (USD cinsinden pozisyon büyüklüğü / coin fiyatı)
+      const quantity = positionSize / currentPrice;
+      
+      logger.info(`Calculated position size for ${symbol}: $${positionSize.toFixed(2)}, Quantity: ${quantity}`);
+      
       // Sipariş tipi ve durumları belirle
       const orderSide = signal.signal === 'long' ? 'BUY' : 'SELL';
       const positionSide = this.binanceService.positionSideMode === 'Hedge' 
@@ -255,7 +263,7 @@ Reason: ${position.exitReason}`;
       const order = await this.binanceService.placeMarketOrder({
         symbol,
         side: orderSide,
-        quantity: positionSize / currentPrice,
+        quantity,
         positionSide
       });
       
@@ -265,7 +273,7 @@ Reason: ${position.exitReason}`;
         await this.binanceService.placeStopLossOrder({
           symbol,
           side: slSide,
-          quantity: positionSize / currentPrice,
+          quantity,
           stopPrice: signal.stopLoss,
           positionSide
         });
@@ -276,7 +284,7 @@ Reason: ${position.exitReason}`;
         await this.binanceService.placeTakeProfitOrder({
           symbol,
           side: tpSide,
-          quantity: positionSize / currentPrice,
+          quantity,
           stopPrice: signal.takeProfit,
           positionSide
         });
