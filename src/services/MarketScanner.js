@@ -337,12 +337,15 @@ class MarketScanner {
             // Miktar hesaplama
             const quantity = await this.orderService.calculateStaticPositionSize(symbol, positionSize);
             
-            // Market emri ile ekstra alım yap
+            // Market emri ile ekstra alım yap - Pozisyon modunu kontrol et
+            const useHedgeMode = config.positionSideMode === 'Hedge';
+            const orderPositionSide = useHedgeMode ? positionSide : undefined;
+            
             await this.orderService.placeMarketOrder({
                 symbol,
                 side,
                 quantity,
-                positionSide
+                positionSide: orderPositionSide
             });
             
             // Pozisyon bilgilerini güncelle
@@ -503,16 +506,20 @@ class MarketScanner {
         `);
 
         // Place market order to open position
+        const useHedgeMode = config.positionSideMode === 'Hedge';
+        const positionSide = useHedgeMode ? (signal === 'BUY' ? 'LONG' : 'SHORT') : undefined;
+        
         await this.orderService.placeMarketOrder({
             symbol,
             side: signal,
             quantity,
-            positionSide: signal === 'BUY' ? 'LONG' : 'SHORT',
+            positionSide,
         });
 
         // Setup stop loss and take profit orders
         const closeSide = signal === 'BUY' ? 'SELL' : 'BUY';
-        const positionSide = signal === 'BUY' ? 'LONG' : 'SHORT';
+        // Only provide positionSide if hedge mode is active
+        const closePositionSide = useHedgeMode ? (signal === 'BUY' ? 'LONG' : 'SHORT') : undefined;
 
         // Enhanced stop loss with better buffer calculation
         const stopLossBuffer = signal === 'BUY' ? 0.99 : 1.01; // Default 1% buffer
@@ -530,7 +537,7 @@ class MarketScanner {
             quantity,
             stopPrice: stopLoss,
             price: stopLoss * dynamicBuffer,
-            positionSide,
+            positionSide: closePositionSide,
         });
 
         // Take Profit Order
@@ -540,7 +547,7 @@ class MarketScanner {
             quantity,
             stopPrice: takeProfit,
             price: takeProfit * (signal === 'BUY' ? 1.01 : 0.99),
-            positionSide,
+            positionSide: closePositionSide,
         });
 
         // Create position record in database

@@ -25,6 +25,30 @@ class BinanceService {
     this.positionSideMode = config.positionSideMode || 'One-Way'; // 'One-Way' veya 'Hedge'
     // Telegram Bot'u tanımla
     this.bot = new TelegramBot(config.telegramBotToken, { polling: false });
+    
+    // Check positisionSideMode and set it
+    this.checkAndSetPositionMode();
+  }
+  
+  /**
+   * Check current position mode and set it if needed
+   */
+  async checkAndSetPositionMode() {
+    try {
+      // Get current position mode
+      const currentMode = await this.client.futuresPositionMode();
+      const targetMode = this.positionSideMode === 'Hedge';
+      
+      if (currentMode.dualSidePosition !== targetMode) {
+        // Set position mode to the configured mode
+        await this.client.futuresChangePositionMode({ dualSidePosition: targetMode });
+        logger.info(`Changed position mode to ${targetMode ? 'Hedge' : 'One-Way'} mode`);
+      } else {
+        logger.info(`Position mode already set to ${targetMode ? 'Hedge' : 'One-Way'} mode`);
+      }
+    } catch (error) {
+      logger.error('Error checking/setting position mode:', error);
+    }
   }
 
   /**
@@ -191,14 +215,24 @@ class BinanceService {
       
       // Properly round price to valid tick size increments
       const rawStopPrice = parseFloat(stopPrice);
-      const tickSizeDecimals = (tickSize.toString().split('.')[1] || '').length;
-      const roundedStopPrice = Math.floor(rawStopPrice / tickSize) * tickSize;
-      const adjustedStopPrice = roundedStopPrice.toFixed(tickSizeDecimals);
+      // Get the correct number of decimal places from the tick size
+      const tickSizeDecimals = tickSize.toString().includes('.') ? 
+          tickSize.toString().split('.')[1].length : 0;
+          
+      // Round the price to match the tick size (using Math.round instead of Math.floor)
+      const roundedPrice = Math.round(rawStopPrice / tickSize) * tickSize;
+      // Convert to fixed precision string
+      const adjustedStopPrice = roundedPrice.toFixed(tickSizeDecimals);
       
       // Properly round quantity to valid step size increments
       const rawQuantity = parseFloat(quantity);
-      const stepSizeDecimals = (stepSize.toString().split('.')[1] || '').length;
-      const roundedQuantity = Math.floor(rawQuantity / stepSize) * stepSize;
+      // Get the correct number of decimal places from the step size
+      const stepSizeDecimals = stepSize.toString().includes('.') ? 
+          stepSize.toString().split('.')[1].length : 0;
+          
+      // Round the quantity to match the step size (using Math.round instead of Math.floor)
+      const roundedQuantity = Math.round(rawQuantity / stepSize) * stepSize;
+      // Convert to fixed precision string
       const adjustedQuantity = roundedQuantity.toFixed(stepSizeDecimals);
       
       logger.info(`Price precision for ${symbol}: ${pricePrecision}, Quantity precision: ${quantityPrecision}`);
@@ -238,14 +272,24 @@ class BinanceService {
       
       // Properly round price to valid tick size increments
       const rawStopPrice = parseFloat(stopPrice);
-      const tickSizeDecimals = (tickSize.toString().split('.')[1] || '').length;
-      const roundedStopPrice = Math.floor(rawStopPrice / tickSize) * tickSize;
-      const adjustedStopPrice = roundedStopPrice.toFixed(tickSizeDecimals);
+      // Get the correct number of decimal places from the tick size
+      const tickSizeDecimals = tickSize.toString().includes('.') ? 
+          tickSize.toString().split('.')[1].length : 0;
+          
+      // Round the price to match the tick size (using Math.round instead of Math.floor)
+      const roundedPrice = Math.round(rawStopPrice / tickSize) * tickSize;
+      // Convert to fixed precision string
+      const adjustedStopPrice = roundedPrice.toFixed(tickSizeDecimals);
       
       // Properly round quantity to valid step size increments
       const rawQuantity = parseFloat(quantity);
-      const stepSizeDecimals = (stepSize.toString().split('.')[1] || '').length;
-      const roundedQuantity = Math.floor(rawQuantity / stepSize) * stepSize;
+      // Get the correct number of decimal places from the step size
+      const stepSizeDecimals = stepSize.toString().includes('.') ? 
+          stepSize.toString().split('.')[1].length : 0;
+          
+      // Round the quantity to match the step size (using Math.round instead of Math.floor)
+      const roundedQuantity = Math.round(rawQuantity / stepSize) * stepSize;
+      // Convert to fixed precision string
       const adjustedQuantity = roundedQuantity.toFixed(stepSizeDecimals);
       
       logger.info(`Price precision for ${symbol}: ${pricePrecision}, Quantity precision: ${quantityPrecision}`);
