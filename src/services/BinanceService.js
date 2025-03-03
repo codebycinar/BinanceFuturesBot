@@ -185,9 +185,36 @@ class BinanceService {
       precision = parseInt(precision);
     }
     
-    const factor = Math.pow(10, precision);
-    const result = Math.floor(value * factor) / factor;
-    return result.toFixed(precision);
+    try {
+      logger.info(`Adjusting precision for value: ${value}, precision: ${precision}`);
+      
+      // Alternatif 1: LOT_SIZE step size kullanarak
+      if (typeof value === 'string') {
+        value = parseFloat(value);
+      }
+      
+      if (isNaN(value) || !isFinite(value)) {
+        logger.error(`Invalid value for precision adjustment: ${value}`);
+        return "0";
+      }
+      
+      // Sıfır veya çok küçük değerler için
+      if (value < Math.pow(10, -precision)) {
+        logger.warn(`Value too small: ${value}, returning minimum allowed`);
+        return (Math.pow(10, -precision)).toFixed(precision);
+      }
+      
+      // Virgülden sonra precision kadar digit tut
+      const factor = Math.pow(10, precision);
+      const truncated = Math.floor(value * factor) / factor;
+      const result = truncated.toFixed(precision);
+      
+      logger.info(`Precision adjusted: ${value} -> ${result}`);
+      return result;
+    } catch (error) {
+      logger.error(`Error adjusting precision for ${value}:`, error);
+      return "0"; // Güvenli geri dönüş
+    }
   }
 
   /**

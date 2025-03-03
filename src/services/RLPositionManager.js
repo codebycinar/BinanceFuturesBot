@@ -241,17 +241,24 @@ Reason: ${position.exitReason}`;
       // Hesap bakiyesini al
       const balance = await this.binanceService.getFuturesBalance();
       
-      // Pozisyon boyutunu hesapla
-      const atr = await this.binanceService.calculateATR(symbol, 14);
-      const positionSize = this.strategy.calculatePositionSize(balance, currentPrice, atr);
-      
       // Exchange bilgilerini al (precision değerleri için)
       await this.binanceService.getExchangeInfo();
       
-      // İşlem miktarını hesapla (USD cinsinden pozisyon büyüklüğü / coin fiyatı)
-      const quantity = positionSize / currentPrice;
+      // Daha güvenli bir pozisyon boyutu hesapla
+      // ATR'den bağımsız sabit bir pozisyon boyutu kullan (20 USD)
+      const positionSize = Math.min(20, balance * 0.01); // Bakiyenin en fazla %1'i, maksimum 20 USD
       
-      logger.info(`Calculated position size for ${symbol}: $${positionSize.toFixed(2)}, Quantity: ${quantity}`);
+      // İşlem miktarını hesapla (USD cinsinden pozisyon büyüklüğü / coin fiyatı)
+      const baseQuantity = positionSize / currentPrice;
+      
+      // Miktar için precision değerlerini al
+      const quantityPrecision = this.binanceService.getQuantityPrecision(symbol);
+      
+      // Daha az hassas bir miktar kullan
+      const quantity = this.binanceService.adjustPrecision(baseQuantity, quantityPrecision);
+      
+      logger.info(`Using fixed position size for ${symbol}: $${positionSize.toFixed(2)}`);
+      logger.info(`Raw quantity: ${baseQuantity}, Adjusted quantity: ${quantity}, Precision: ${quantityPrecision}`);
       
       // Sipariş tipi ve durumları belirle
       const orderSide = signal.signal === 'long' ? 'BUY' : 'SELL';
