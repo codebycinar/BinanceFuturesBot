@@ -7,17 +7,17 @@ const ti = require('technicalindicators');
 
 class TurtleTradingStrategy {
     constructor() {
-        // Varsayılan parametreler (config veya veritabanından yükleme yoksa bunlar kullanılır)
+        // Modern piyasalara uyarlanmış Turtle Trading parametreleri
         this.parameters = {
-            entryChannel: 20,    // 20 periyotluk kanal (giriş sinyali için)
+            entryChannel: 200,   // 200 periyotluk kanal (giriş sinyali için) - orijinal 20 yerine
             exitChannel: 10,     // 10 periyotluk kanal (çıkış sinyali için)
             atrPeriod: 14,       // ATR periyodu
-            riskPercentage: 1,   // Risk yüzdesi
+            riskPercentage: 1,   // Risk yüzdesi %1 (optimum değer)
             atrMultiplier: 2,    // Stop loss için ATR çarpanı
-            confirmationPeriod: 3, // En az 3 mum gerekli kırılma doğrulaması için
-            profitMultiplier: 3,  // Risk:Ödül oranını 1:3'e çıkardık
-            maxEntries: 4,        // Maksimum giriş sayısı
-            timeframe: '4h',      // Tercih edilen zaman dilimi
+            confirmationPeriod: 5, // Daha güçlü doğrulama için 5 mum 
+            profitMultiplier: 3,  // Risk:Ödül oranı 1:3
+            maxEntries: 3,        // Maksimum giriş sayısı
+            timeframe: '1d',      // Günlük zaman dilimi (daha uzun trend için)
             volumeConfirmation: true, // Hacim onayı kontrolü
             useBreakEven: true,   // Break-even kullanımını aç/kapa
             breakEvenActivationPercent: 0.8 // %0.8 kar seviyesinde aktifleştir (ATR'nin katsayısı)
@@ -107,8 +107,26 @@ class TurtleTradingStrategy {
                 return { signal: 'NEUTRAL' };
             }
             
+            // Adaptif kırılma seviyesi - piyasa koşullarına göre ayarla
+            let entryPeriod = this.parameters.entryChannel;
+            if (this.parameters.adaptiveBreakout) {
+                // Volatiliteye göre kırılma periyodunu ayarla
+                const atr = this.calculateATR(candles, this.parameters.atrPeriod);
+                const currentPrice = parseFloat(candles[candles.length - 1].close);
+                const volatilityPercent = (atr / currentPrice) * 100;
+                
+                // Yüksek volatilitede daha uzun periyot, düşük volatilitede daha kısa
+                if (volatilityPercent > 3.0) { // Yüksek volatilite
+                    entryPeriod = Math.min(300, this.parameters.entryChannel * 1.5);
+                    logger.info(`High volatility (${volatilityPercent.toFixed(2)}%), increasing breakout period to ${entryPeriod}`);
+                } else if (volatilityPercent < 1.0) { // Düşük volatilite
+                    entryPeriod = Math.max(100, this.parameters.entryChannel * 0.75);
+                    logger.info(`Low volatility (${volatilityPercent.toFixed(2)}%), decreasing breakout period to ${entryPeriod}`);
+                }
+            }
+            
             // Donchian Kanallarını hesapla
-            const entryDonchian = this.calculateDonchianChannel(candles, this.parameters.entryChannel);
+            const entryDonchian = this.calculateDonchianChannel(candles, Math.round(entryPeriod));
             const exitDonchian = this.calculateDonchianChannel(candles, this.parameters.exitChannel);
             
             // ATR hesapla

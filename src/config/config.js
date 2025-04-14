@@ -56,20 +56,21 @@ module.exports = {
   },
   
   
-  // Turtle Trading stratejisi özellikleri
+  // Modern Turtle Trading stratejisi özellikleri (güncellenmiş)
   turtleStrategy: {
-    entryChannel: 20,     // 20 periyotluk kanal (giriş sinyali için)
+    entryChannel: 200,    // 200 periyotluk kanal (giriş sinyali için) - modern piyasalara uyarlanmış
     exitChannel: 10,      // 10 periyotluk kanal (çıkış sinyali için)
     atrPeriod: 14,        // ATR periyodu
-    riskPercentage: 1,    // Risk yüzdesi
+    riskPercentage: 1,    // Risk yüzdesi %1 (optimum değer)
     atrMultiplier: 2,     // Stop loss için ATR çarpanı
-    confirmationPeriod: 3, // En az 3 mum gerekli kırılma doğrulaması için
-    profitMultiplier: 3,  // Risk:Ödül oranını 1:3'e çıkardık
-    timeframe: '4h',      // Turtle Trading için önerilen zaman dilimi
-    maxEntries: 4,        // Bir pozisyon için maksimum giriş sayısı
+    confirmationPeriod: 5, // Daha güçlü doğrulama için 5 mum
+    profitMultiplier: 3,  // Risk:Ödül oranı 1:3
+    timeframe: '1d',      // Günlük zaman dilimi (daha uzun trend için)
+    maxEntries: 3,        // Bir pozisyon için maksimum giriş sayısı (azaltıldı)
     volumeConfirmation: true, // Hacim onayı kontrolü
     useBreakEven: true,    // Break-even kullanımını aç/kapa
-    breakEvenActivationPercent: 0.8 // %0.8 kar seviyesinde aktifleştir (ATR'nin katsayısı)
+    breakEvenActivationPercent: 0.8, // %0.8 kar seviyesinde aktifleştir
+    adaptiveBreakout: true // Adaptif kırılma seviyesi (piyasa koşullarına göre ayarlama)
   },
   
   // Risk ve ödül oranları
