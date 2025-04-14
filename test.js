@@ -49,7 +49,7 @@ async function testOnchainMetrics() {
     logger.info(`${asset} Smart Money Signal: ${signal.signal} (confidence: ${signal.confidence.toFixed(2)})`);
     
     // API çağrı sayısını göster
-    logger.info(`CoinCap API Call Count: ${metrics.apiCallCount.coincap}`);
+    logger.info(`CoinCap API Call Count: ${metrics.dailyRequestCount.coincap}/${metrics.dailyRequestLimit.coincap}`);
     logger.info(`Test completed successfully with CoinCap API key`);
   } catch (error) {
     logger.error(`Error testing metrics for ${asset}: ${error.message}`);

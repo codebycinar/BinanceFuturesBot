@@ -646,19 +646,19 @@ class OnchainMetricsService {
       
       // CoinCap API için Authorization header ekle
       if (apiName === 'coincap') {
-        const originalRequestFunc = requestFunc;
+        const url = arguments[0]; // URL'yi ilk parametre olarak al
+        
+        // İsteği yapacak yeni bir fonksiyon oluştur
         requestFunc = async () => {
           try {
-            return await axios.get(
-              // URL'yi doğrudan aldığımız parametre olarak kullan
-              arguments[0], 
-              {
-                headers: {
-                  'Authorization': `Bearer ${this.coincapApiKey}`
-                }
+            logger.debug(`Making CoinCap API request to: ${url}`);
+            return await axios.get(url, {
+              headers: {
+                'Authorization': `Bearer ${this.coincapApiKey}`
               }
-            );
+            });
           } catch (error) {
+            logger.error(`CoinCap API request error: ${error.message}`);
             throw error;
           }
         };
