@@ -9,46 +9,73 @@ module.exports = {
   testnet: process.env.TESTNET === 'true', // Testnet kullanıyorsanız .env dosyasına TESTNET=true ekleyin
   positionSideMode: process.env.POSITION_SIDE_MODE || 'One-Way', // 'One-Way' veya 'Hedge'
 
+  // Ana strateji: TurtleTradingStrategy
+  // Aktif olarak kullanılacak strateji
+  activeStrategy: 'TurtleTradingStrategy',
 
+  // Strateji parametreleri 
   strategy: {
     atrPeriod: 14, // ATR göstergesinin periyodu
     bbPeriod: 20, // Bollinger Bantlarının periyodu
     bbStdDev: 2, // Bollinger Bantları standart sapması
     stochasticPeriod: 14, // Stochastic göstergesinin periyodu
     stochasticSignalPeriod: 3, // Stochastic sinyal periyodu
-    atrLookback: 21, // ATR yön kontrolü için bakılacak mum sayısı
     allocation: [0.2, 0.3, 0.5], // İlk, ikinci ve üçüncü alımlar için bütçe oranları
     timeframe: '4h', // Turtle Trading için 4h çerçevesini kullan
-    limit: 100,
     keyValue: 2,               // ATR çarpanı
     riskReward: 3,             // Risk/Kar oranı
     leverage: 5,              // Kaldıraç oranı
   },
+  
+  // Turtle Trading stratejisi özellikleri
+  turtleStrategy: {
+    entryChannel: 20,     // 20 periyotluk kanal (giriş sinyali için)
+    exitChannel: 10,      // 10 periyotluk kanal (çıkış sinyali için)
+    atrPeriod: 14,        // ATR periyodu
+    riskPercentage: 1,    // Risk yüzdesi
+    atrMultiplier: 2,     // Stop loss için ATR çarpanı
+    confirmationPeriod: 3, // En az 3 mum gerekli kırılma doğrulaması için
+    profitMultiplier: 3,  // Risk:Ödül oranını 1:3'e çıkardık
+    timeframe: '4h',      // Turtle Trading için önerilen zaman dilimi
+    maxEntries: 4,        // Bir pozisyon için maksimum giriş sayısı
+    volumeConfirmation: true, // Hacim onayı kontrolü
+    useBreakEven: true,    // Break-even kullanımını aç/kapa
+    breakEvenActivationPercent: 0.8 // %0.8 kar seviyesinde aktifleştir (ATR'nin katsayısı)
+  },
+  
   // Risk ve ödül oranları
   riskPerTrade: 0.01, // Risk per trade (%1 of account)
 
-  calculate_position_size: false,
-  static_position_size: 100, //usdt 
+  // Pozisyon boyutunu nasıl hesaplayacağını belirle
+  calculate_position_size: false,  // false: sabit boyut, true: hesaplanmış boyut
+  static_position_size: 100, // USDT cinsinden sabit pozisyon boyutu
+  
   // Stop-loss ve Take-profit seviyeleri (yüzde cinsinden)
   stopLossPercent: 1, // %1 stop-loss
-  takeProfitPercents: [3, 5, 7.5],
-
+  takeProfitPercents: [3, 5, 7.5], // Çoklu TP için yüzdeler
+  
   // Trailing stop ayarları
   trailingStop: {
-    use: true,
+    use: true,  // Trailing stop kullanımını aç/kapa
     callbackRate: 0.5, // %0.5 geri çekilmede stop
+    activationPercent: 1.0, // %1 kar sonrası aktifleştir
   },
 
   // Diğer ayarlar
   marketScanInterval: 120000, // 2 dakika
-  minPriceMovement: 0.0001, // Minimum fiyat hareketi
-  limitOrderTolerance: 0.005, // %0.5 mesafe toleransı
   maxOpenPositions: 15, // Açık pozisyon limiti
+  
+  // İzlenecek semboller - bunlar piyasada likiditesi yüksek olan sembollerdir
   topSymbols: [
-    'VANAUSDT', 'MEUSDT', 'PENGUUSDT', 'THEUSDT', 'MORPHOUSDT',
-    'VANRYUSDT', 'MOVEUSDT', 'NEIROUSDT', 'AVAXUSDT', 'BLURUSDT',
-    '1000PEPEUSDT', 'XAIUSDT', 'DOGEUSDT', 'APTUSDT', 'DYMUSDT',
-    'FLOWUSDT', 'MINAUSDT', 'DOTUSDT', 'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'XRPUSDT', 'SOLUSDT',
-    'ADAUSDT', 'TRXUSDT', 'LTCUSDT', 'LINKUSDT', 'XLMUSDT',
+    'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'AVAXUSDT',
+    'DOGEUSDT', 'ADAUSDT', 'DOTUSDT', 'LINKUSDT', 'MATICUSDT',
+    'XRPUSDT', 'NEARUSDT', 'ATOMUSDT', 'APTUSDT', 'TRXUSDT',
   ],
+  
+  // Performans takibi
+  performanceTracking: {
+    enable: true,  // Performans takibini aç/kapa
+    saveToFile: true, // Sonuçları dosyaya kaydet
+    historyLimit: 100, // Kaç işlemi sakla
+  }
 };

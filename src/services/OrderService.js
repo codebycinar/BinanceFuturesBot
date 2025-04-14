@@ -41,22 +41,42 @@ class OrderService {
 
 
   async calculateOrderQuantity(allocation, price) {
-    // Bakiyeyi config'den alın veya dinamik olarak hesaplayın
-    const balance = config.calculate_position_size ? await this.binanceService.getFuturesBalance() : config.static_position_size; // Sabit veya dinamik mod
-
-    // Pozisyon büyüklüğü hesaplama
-    const quantity = (balance * allocation) / price;
-
-    // Minimum notional kontrolü
-    const notional = quantity * price;
-    const minNotional = 5; // Binance için minimum işlem büyüklüğü
-    if (notional < minNotional) {
-      logger.warn(`Calculated notional (${notional}) is below minimum. Allocation: ${allocation}, Balance: ${balance}, Price: ${price}`);
-      return 0; // Minimum notional sağlanmıyorsa işlem yapmayın
+    try {
+      // Pozisyon büyüklüğünü belirle
+      let usdtAmount;
+      
+      if (allocation > 0) {
+        // Eğer allocation verilmişse, direkt kullan
+        usdtAmount = allocation;
+      } else {
+        // Hesaplama türüne göre USDT miktarını belirle
+        if (config.calculate_position_size) {
+          // Dinamik hesaplama - Bakiye * risk oranı
+          const balance = await this.binanceService.getFuturesBalance();
+          usdtAmount = balance * config.riskPerTrade;
+        } else {
+          // Sabit değeri kullan
+          usdtAmount = config.static_position_size;
+        }
+      }
+  
+      // USDT miktarını koin miktarına çevir
+      const quantity = usdtAmount / price;
+  
+      // Minimum notional kontrolü
+      const notional = quantity * price;
+      const minNotional = 5; // Binance için minimum işlem büyüklüğü
+      if (notional < minNotional) {
+        logger.warn(`Calculated notional (${notional}) is below minimum. USDT amount: ${usdtAmount}, Price: ${price}`);
+        return 0; // Minimum notional sağlanmıyorsa işlem yapmayın
+      }
+  
+      logger.info(`Calculated order quantity: ${quantity} for USDT amount: ${usdtAmount}, price: ${price}`);
+      return quantity;
+    } catch (error) {
+      logger.error(`Error calculating order quantity: ${error.message}`);
+      return 0;
     }
-
-    logger.info(`Calculated order quantity: ${quantity} for allocation: ${allocation}, price: ${price}, balance: ${balance}`);
-    return quantity;
   }
   /**
    * Pozisyon açma işlemi
@@ -175,40 +195,37 @@ class OrderService {
   async calculatePositionSize(symbol, currentPrice) {
     const { calculate_position_size, static_position_size } = config;
 
-
-    if (!calculate_position_size) {
-      // Sabit pozisyon büyüklüğüne göre miktarı hesapla
-      const quantity = static_position_size / currentPrice;
-
+    try {
+      let usdtAmount;
+      
+      if (!calculate_position_size) {
+        // Sabit pozisyon büyüklüğü kullan
+        usdtAmount = static_position_size;
+        logger.info(`Using static position size (${static_position_size} USDT) for ${symbol}`);
+      } else {
+        // Dinamik hesaplama - Bakiyenin riskPerTrade yüzdesini kullan
+        const balance = await this.binanceService.getFuturesBalance();
+        usdtAmount = balance * config.riskPerTrade;
+        logger.info(`Using dynamic position size (${config.riskPerTrade * 100}% of ${balance} = ${usdtAmount} USDT) for ${symbol}`);
+      }
+      
+      // USDT miktarını koin miktarına çevir
+      const quantity = usdtAmount / currentPrice;
+      
+      // Sembol için adım büyüklüğüne göre ayarla
       const stepSize = await this.binanceService.getStepSize(symbol);
       const adjustedQuantity = this.binanceService.adjustPrecision(quantity, stepSize);
-
+      
+      // Minimum işlem büyüklüğü kontrolü
       const notional = adjustedQuantity * currentPrice;
       const minNotional = 5; // Binance'in minimum işlem büyüklüğü
-
+      
       if (notional < minNotional) {
         logger.warn(`Notional value (${notional}) for ${symbol} is below the minimum (${minNotional} USDT).`);
         return 0; // Minimum notional sağlanmıyorsa işlem yapmayın
       }
-
-      logger.info(`Using static position size (${static_position_size} USDT) for ${symbol}. Calculated quantity: ${adjustedQuantity}`);
-      return adjustedQuantity;
-    }
-    try {
-      // Dinamik hesaplama
-      const balance = await this.binanceService.getFuturesBalance();
-      const usdtAmount = balance * config.riskPerTrade;
-
-      const atr = await this.binanceService.calculateATR(symbol, config.strategy.atrPeriod);
-      const stopLossDistance = config.strategy.keyValue * atr;
-
-      const leverage = config.strategy.leverage;
-      const quantity = (usdtAmount * leverage) / currentPrice;
-
-      const stepSize = await this.binanceService.getStepSize(symbol);
-      const adjustedQuantity = this.binanceService.adjustPrecision(quantity, stepSize);
-
-      logger.info(`Dynamically calculated quantity for ${symbol}: ${adjustedQuantity}`);
+      
+      logger.info(`Calculated quantity for ${symbol}: ${adjustedQuantity} (${usdtAmount} USDT at price ${currentPrice})`);
       return adjustedQuantity;
     } catch (error) {
       logger.error(`Error calculating position size for ${symbol}:`, error);
@@ -218,10 +235,18 @@ class OrderService {
 
   async calculateStaticPositionSize(symbol, allocation) {
     try {
-      if (!config.calculate_position_size) {
-        allocation = config.static_position_size;
+      // Pozisyon büyüklüğünü belirleme
+      if (allocation <= 0) {
+        if (!config.calculate_position_size) {
+          // Eğer allocation geçersizse ve hesaplama kapalıysa, config'den statik değeri kullan
+          allocation = config.static_position_size;
+        } else {
+          // Dinamik hesaplama için balance * riskPerTrade kullan
+          const balance = await this.binanceService.getFuturesBalance();
+          allocation = balance * config.riskPerTrade;
+        }
       }
-
+      
       const currentPrice = await this.binanceService.getCurrentPrice(symbol);
 
       if (!currentPrice || allocation <= 0) {
@@ -229,8 +254,8 @@ class OrderService {
         return 0;
       }
 
-      // Kaldıraç ile pozisyon büyüklüğü hesaplama
-      const positionSize = (allocation * config.strategy.leverage) / currentPrice;
+      // USDT miktarını koin miktarına çevir (kaldıraç kullanmadan)
+      const positionSize = allocation / currentPrice;
 
       const stepSize = await this.binanceService.getStepSize(symbol);
       const roundedPositionSize = this.binanceService.roundQuantity(positionSize, stepSize);
@@ -243,10 +268,10 @@ class OrderService {
         return 0;
       }
 
-      logger.info(`Calculated static position size for ${symbol}: ${roundedPositionSize}, Notional=${notional}`);
+      logger.info(`Calculated position size for ${symbol}: ${roundedPositionSize} (${allocation} USDT at price ${currentPrice})`);
       return roundedPositionSize;
     } catch (error) {
-      logger.error(`Error calculating static position size for ${symbol}: ${error.message}`);
+      logger.error(`Error calculating position size for ${symbol}: ${error.message}`);
       return 0;
     }
   }
