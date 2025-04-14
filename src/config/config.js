@@ -22,9 +22,20 @@ module.exports = {
   // Market tarama aralığı (ms)
   marketScanInterval: 5 * 60 * 1000, // 5 dakika
   
-  // Ana strateji: HybridOnchainStrategy
-  // Aktif olarak kullanılacak strateji: TurtleTradingStrategy veya HybridOnchainStrategy
-  activeStrategy: 'HybridOnchainStrategy',
+  // Etkinleştirilmiş stratejiler (tüm stratejileri yüklemek yerine whitelist kullan)
+  enabledStrategies: [
+    'TurtleTradingStrategy',
+    'AdaptiveStrategy',
+    'HybridOnchainStrategy',
+    'MomentumStrategy',
+    'SupportResistanceStrategy',
+    'BollingerStrategy',
+    'AdvancedScalpingStrategy'
+  ],
+  
+  // Öncelikli strateji (her sembol için tüm stratejiler test edilecek)
+  // Bu strateji pozisyon açmak için daha fazla ağırlık alacak
+  primaryStrategy: 'HybridOnchainStrategy',
 
   // Strateji parametreleri 
   strategy: {

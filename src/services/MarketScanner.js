@@ -1,15 +1,16 @@
 // services/MarketScanner.js
 
-const TurtleTradingStrategy = require('../strategies/TurtleTradingStrategy');
 const config = require('../config/config');
 const logger = require('../utils/logger');
 const { models } = require('../db/db');
 const { Position } = models;
 const dotenv = require("dotenv");
 const telegramService = require('./TelegramService');
+const { Op } = require('sequelize');
 
 const MultiTimeframeService = require('../services/MultiTimeframeService');
 const EnhancedPositionManager = require('../services/EnhancedPositionManager');
+const StrategyManager = require('./StrategyManager');
 
 class MarketScanner {
     constructor(binanceService, orderService, mtfService, performanceTracker = null) {
@@ -18,38 +19,32 @@ class MarketScanner {
         this.mtfService = mtfService;
         this.performanceTracker = performanceTracker;
         
-        // Aktif stratejiyi config'den belirle
-        const activeStrategyName = config.activeStrategy || 'TurtleTradingStrategy';
-        this.initializeStrategy(activeStrategyName);
+        // Strateji yöneticisi oluştur
+        this.strategyManager = new StrategyManager();
+        
+        // Öncelikli strateji
+        this.primaryStrategy = config.primaryStrategy || 'HybridOnchainStrategy';
         
         this.positionStates = {};
         this.weakSignalBuffer = []; // Zayıf sinyalleri gruplamak için buffer
         this.weakSignalBatchSize = 5; // Her mesajda kaç sinyal birleştirileceği
         this.lastMarketConditions = {}; // Market koşullarını izlemek için
-    }
-    
-    // Stratejiyi başlat
-    initializeStrategy(strategyName) {
-        // Strateji oluştur
-        switch (strategyName) {
-            case 'TurtleTradingStrategy':
-                this.strategy = new TurtleTradingStrategy();
-                break;
-            case 'HybridOnchainStrategy':
-                const HybridOnchainStrategy = require('../strategies/HybridOnchainStrategy');
-                this.strategy = new HybridOnchainStrategy();
-                break;
-            default:
-                logger.warn(`Unknown strategy: ${strategyName}, defaulting to TurtleTradingStrategy`);
-                this.strategy = new TurtleTradingStrategy();
-        }
         
-        logger.info(`MarketScanner initialized with ${strategyName}`);
+        // Sinyal değerlendirme ağırlıkları
+        this.signalWeights = {
+            'BUY': 3,     // Güçlü alış sinyali
+            'SELL': 3,    // Güçlü satış sinyali
+            'WEAK_BUY': 1, // Zayıf alış sinyali
+            'WEAK_SELL': 1, // Zayıf satış sinyali
+            'NEUTRAL': 0  // Nötr sinyal
+        };
     }
     
     async initialize() {
-        await this.strategy.initialize();
-        logger.info(`Market Scanner initialized with ${this.strategy.constructor.name}`);
+        // Strateji yöneticisini başlat
+        await this.strategyManager.initialize();
+        
+        logger.info(`Market Scanner initialized with strategy manager (${this.strategyManager.activeStrategies.length} active strategies)`);
     }
 
     /**
@@ -226,7 +221,7 @@ class MarketScanner {
      */
     /**
   * Belirli bir sembolü tarar ve pozisyon açma işlemlerini gerçekleştirir.
-  * Çoklu zaman çerçevesi analizi ve adaptif strateji kullanır.
+  * Tüm aktif stratejileri kullanarak sinyal üretir.
   */
     async scanSymbol(symbol) {
         try {
@@ -234,24 +229,24 @@ class MarketScanner {
                 throw new Error('Binance service is not defined');
             }
 
-            logger.info(`\n=== Scanning ${symbol} with Multi-Timeframe Analysis ===`, { timestamp: new Date().toISOString() });
+            logger.info(`\n=== Scanning ${symbol} with All Active Strategies ===`, { timestamp: new Date().toISOString() });
 
             // Açık pozisyon kontrolü
             let position = await Position.findOne({ where: { symbol, isActive: true } });
             if (position) {
                 logger.info(`Active position found for ${symbol}. Managing position...`);
                 
-                // Strateji için tercih edilen zaman dilimini kullan veya varsayılan olarak 1h'ı kullan
-                const timeframe = this.strategy.preferredTimeframe || '1h';
-                const candles = await this.binanceService.getCandles(symbol, timeframe, 100);
+                // Pozisyon yönetimi için çoklu zaman dilimi verileri al
+                const mtfData = await this.mtfService.getMultiTimeframeData(symbol);
+                const defaultCandles = mtfData.candles['1h'] || [];
                 
-                if (!candles || candles.length === 0) {
+                if (!defaultCandles || defaultCandles.length === 0) {
                     logger.warn(`No candles fetched for ${symbol}. Skipping position management.`);
                     return;
                 }
                 
                 // Pozisyon yönetimini burada yap
-                await this.managePosition(position, candles);
+                await this.managePosition(position, defaultCandles, mtfData);
                 return;
             }
 
@@ -264,63 +259,62 @@ class MarketScanner {
                 return;
             }
 
-            // Stratejiye göre optimize edilmiş zaman dilimlerini kullan
-            const mtfData = await this.mtfService.getMultiTimeframeData(symbol, this.strategy);
+            // Tüm zaman dilimlerinde veri al
+            const mtfData = await this.mtfService.getMultiTimeframeData(symbol);
+            const defaultCandles = mtfData.candles['1h'] || [];
             
-            // Strateji için tercih edilen zaman dilimini kullan veya varsayılan olarak 1h'ı kullan
-            const preferredTimeframe = this.strategy.preferredTimeframe || '1h';
-            const candles = mtfData.candles[preferredTimeframe] || mtfData.candles['1h'];
-            
-            if (!candles || candles.length === 0) {
-                logger.warn(`No candles fetched for ${symbol} with timeframe ${preferredTimeframe}. Skipping.`);
+            if (!defaultCandles || defaultCandles.length === 0) {
+                logger.warn(`No candles fetched for ${symbol}. Skipping.`);
                 return;
             }
             
-            logger.info(`Using ${preferredTimeframe} timeframe for ${symbol} with ${this.strategy.constructor.name}`);
+            // Tüm stratejiler için sinyaller üret
+            const signals = await this.strategyManager.generateSignalsForAllStrategies(symbol, defaultCandles, mtfData);
             
-            // Market koşullarını analiz et
-            const marketConditions = await this.strategy.analyzeMarketConditions(mtfData, symbol);
-            this.lastMarketConditions[symbol] = marketConditions;
+            if (signals.length === 0) {
+                logger.info(`No signals generated for ${symbol} from any strategy.`);
+                return;
+            }
             
-            // Log market conditions
-            logger.info(`Market conditions for ${symbol}: 
-                - Trend: ${marketConditions.trend} (Strength: ${marketConditions.trendStrength}%)
-                - Volatility: ${marketConditions.volatility}
-                - Market Type: ${marketConditions.marketType}
-                - Volume: ${marketConditions.volume}
-            `);
+            // En güçlü sinyali bul
+            const bestSignal = this.findBestSignal(signals);
             
-            // Yeni sinyal üretme (Adaptif Strateji)
-            const { signal, stopLoss, takeProfit, allocation, unmetConditions, strategyUsed } = 
-                await this.strategy.generateSignal(candles, symbol);
-
-            if (signal === 'NEUTRAL') {
+            if (!bestSignal || !bestSignal.signal || bestSignal.signal === 'NEUTRAL') {
                 logger.info(`No actionable signal for ${symbol}.`);
                 return;
             }
-
-            // Pozisyon açma
-            const currentPrice = candles[candles.length - 1].close;
-
-            if (signal === 'BUY' || signal === 'SELL') {
-                await this.openNewPosition(symbol, signal, currentPrice, stopLoss, takeProfit, allocation, strategyUsed);
-            } else if (signal === 'WEAK_BUY' || signal === 'WEAK_SELL') {
-                const signalType = signal === 'WEAK_BUY' ? 'BUY' : 'SELL';
+            
+            logger.info(`Best signal for ${symbol}: ${bestSignal.signal} from ${bestSignal.strategyName || 'Unknown'}, weight: ${bestSignal.signalWeight || 0}`);
+            
+            // Mevcut fiyatı al
+            const currentPrice = defaultCandles[defaultCandles.length - 1].close;
+            
+            // Sinyal türüne göre işlem yap
+            if (bestSignal.signal === 'BUY' || bestSignal.signal === 'SELL') {
+                await this.openNewPosition(
+                    symbol, 
+                    bestSignal.signal, 
+                    currentPrice, 
+                    bestSignal.stopLoss, 
+                    bestSignal.takeProfit, 
+                    bestSignal.allocation, 
+                    bestSignal.strategyName || 'Multi-Strategy'
+                );
+            } else if (bestSignal.signal === 'WEAK_BUY' || bestSignal.signal === 'WEAK_SELL') {
+                const signalType = bestSignal.signal === 'WEAK_BUY' ? 'BUY' : 'SELL';
                 await this.sendWeakSignalMessage(
                     symbol, 
                     signalType, 
                     currentPrice, 
-                    stopLoss, 
-                    takeProfit, 
-                    allocation, 
-                    unmetConditions,
-                    strategyUsed
+                    bestSignal.stopLoss, 
+                    bestSignal.takeProfit, 
+                    bestSignal.allocation, 
+                    bestSignal.unmetConditions || 'Unknown reasons',
+                    bestSignal.strategyName || 'Multi-Strategy'
                 );
-            } else if (signal === 'ADD_BUY' || signal === 'ADD_SELL') {
+            } else if (bestSignal.signal === 'ADD_BUY' || bestSignal.signal === 'ADD_SELL') {
                 // Mevcut pozisyonu bul ve giriş sayısını arttır
-                const { Position } = models;
-                const { Op } = require('sequelize');
-                const direction = signal === 'ADD_BUY' ? 1 : -1;
+                const direction = bestSignal.signal === 'ADD_BUY' ? 1 : -1;
                 const position = await Position.findOne({
                     where: { 
                         symbol,
@@ -330,15 +324,20 @@ class MarketScanner {
                 });
                 
                 if (position) {
-                    await this.addToPosition(position, signal, currentPrice, stopLoss, takeProfit, allocation);
+                    await this.addToPosition(
+                        position, 
+                        bestSignal.signal, 
+                        currentPrice, 
+                        bestSignal.stopLoss, 
+                        bestSignal.takeProfit, 
+                        bestSignal.allocation
+                    );
                 } else {
                     logger.warn(`No active ${direction > 0 ? 'LONG' : 'SHORT'} position found for ${symbol} to add to.`);
                 }
-            } else if (signal === 'EXIT_BUY' || signal === 'EXIT_SELL') {
+            } else if (bestSignal.signal === 'EXIT_BUY' || bestSignal.signal === 'EXIT_SELL') {
                 // Pozisyonu kapat
-                const { Position } = models;
-                const { Op } = require('sequelize');
-                const direction = signal === 'EXIT_BUY' ? 1 : -1;
+                const direction = bestSignal.signal === 'EXIT_BUY' ? 1 : -1;
                 const position = await Position.findOne({
                     where: { 
                         symbol,
@@ -348,8 +347,8 @@ class MarketScanner {
                 });
                 
                 if (position) {
-                    await this.closePosition(position, currentPrice, 'turtle_exit_signal');
-                    logger.info(`Closed ${direction > 0 ? 'LONG' : 'SHORT'} position for ${symbol} based on Turtle exit signal`);
+                    await this.closePosition(position, currentPrice, `${bestSignal.strategyName || 'strategy'}_exit_signal`);
+                    logger.info(`Closed ${direction > 0 ? 'LONG' : 'SHORT'} position for ${symbol} based on ${bestSignal.strategyName || 'strategy'} exit signal`);
                 } else {
                     logger.warn(`No active ${direction > 0 ? 'LONG' : 'SHORT'} position found for ${symbol} to close.`);
                 }
@@ -358,6 +357,96 @@ class MarketScanner {
             logger.error(`Error scanning symbol ${symbol}: ${error.message || JSON.stringify(error)}`);
             logger.error(error.stack);
         }
+    }
+    
+    /**
+     * Strateji sinyallerini değerlendirir ve en iyi sinyali döndürür
+     * @param {Array} signals - Tüm stratejilerden gelen sinyal listesi
+     * @returns {Object} - En iyi sinyal
+     */
+    findBestSignal(signals) {
+        if (!signals || signals.length === 0) {
+            return null;
+        }
+        
+        // Güçlü sinyali olan stratejileri bul
+        const strongSignals = signals.filter(s => 
+            s.signal === 'BUY' || s.signal === 'SELL' || 
+            s.signal === 'ADD_BUY' || s.signal === 'ADD_SELL' ||
+            s.signal === 'EXIT_BUY' || s.signal === 'EXIT_SELL'
+        );
+        
+        // Önce tüm güçlü sinyalleri değerlendir
+        if (strongSignals.length > 0) {
+            // Öncelikli stratejinin güçlü bir sinyali var mı kontrol et
+            const primaryStrategySignal = strongSignals.find(s => s.strategyName === this.primaryStrategy);
+            if (primaryStrategySignal) {
+                // Ağırlık ekle
+                primaryStrategySignal.signalWeight = this.signalWeights[primaryStrategySignal.signal] + 2; // Öncelikli stratejiye ek puan
+                return primaryStrategySignal;
+            }
+            
+            // Her sinyale ağırlık ver ve en yüksek ağırlıklı sinyali döndür
+            strongSignals.forEach(s => {
+                s.signalWeight = this.signalWeights[s.signal] || 0;
+                
+                // Trend ile uyumlu sinyallere ek puan
+                if (s.indicators && this.lastMarketConditions[s.symbol]) {
+                    const trend = this.lastMarketConditions[s.symbol].trend;
+                    const signal = s.signal;
+                    
+                    if ((trend === 'UP' && (signal === 'BUY' || signal === 'ADD_BUY')) ||
+                        (trend === 'DOWN' && (signal === 'SELL' || signal === 'ADD_SELL'))) {
+                        s.signalWeight += 1;
+                    }
+                }
+            });
+            
+            // En yüksek ağırlıklı sinyali döndür
+            return strongSignals.reduce((best, current) => {
+                if (!best || (current.signalWeight > best.signalWeight)) {
+                    return current;
+                }
+                return best;
+            }, null);
+        }
+        
+        // Eğer güçlü sinyal yoksa, zayıf sinyallere bak
+        const weakSignals = signals.filter(s => 
+            s.signal === 'WEAK_BUY' || s.signal === 'WEAK_SELL'
+        );
+        
+        if (weakSignals.length > 0) {
+            // Zayıf sinyallere ağırlık ver
+            weakSignals.forEach(s => {
+                s.signalWeight = this.signalWeights[s.signal] || 0;
+                
+                // Trend ile uyumlu sinyallere ek puan
+                if (s.indicators && this.lastMarketConditions[s.symbol]) {
+                    const trend = this.lastMarketConditions[s.symbol].trend;
+                    const signal = s.signal;
+                    
+                    if ((trend === 'UP' && signal === 'WEAK_BUY') ||
+                        (trend === 'DOWN' && signal === 'WEAK_SELL')) {
+                        s.signalWeight += 0.5;
+                    }
+                }
+            });
+            
+            // En yüksek ağırlıklı zayıf sinyali döndür
+            return weakSignals.reduce((best, current) => {
+                if (!best || (current.signalWeight > best.signalWeight)) {
+                    return current;
+                }
+                return best;
+            }, null);
+        }
+        
+        // Hiç kullanılabilir sinyal yoksa, NEUTRAL sinyal döndür
+        return {
+            signal: 'NEUTRAL',
+            signalWeight: 0
+        };
     }
 
     /**
@@ -973,9 +1062,9 @@ class MarketScanner {
         }
     }
 
-    async managePosition(position, candles) {
+    async managePosition(position, candles, mtfData = null) {
         try {
-            const { symbol, entries, stopLoss, takeProfit, totalAllocation, entryPrices } = position;
+            const { symbol, entries, stopLoss, takeProfit, totalAllocation, entryPrices, strategyUsed } = position;
             
             // Gerçek zamanlı fiyat almak için Binance API'sini kullan (daha doğru sonuçlar için)
             const currentPrice = await this.binanceService.getCurrentPrice(symbol);
@@ -987,6 +1076,51 @@ class MarketScanner {
             const lastCandle = candles[candles.length - 1];
             const isLong = entries > 0;
             const isShort = entries < 0;
+            
+            // Pozisyon için kullanılan stratejiyi bul
+            let positionStrategy = null;
+            if (strategyUsed) {
+                // Strateji adından ".js" uzantısını kaldır (eğer varsa)
+                const strategyName = strategyUsed.replace('.js', '');
+                positionStrategy = this.strategyManager.getStrategy(strategyName);
+            }
+            
+            // Strateji yoksa veya erişilemiyorsa, tüm stratejileri kontrol et
+            if (!positionStrategy) {
+                // Tüm stratejilerden çıkış sinyali kontrolü yap
+                if (mtfData) {
+                    const signals = await this.strategyManager.generateSignalsForAllStrategies(symbol, candles, mtfData);
+                    
+                    // Pozisyon tipi için uygun çıkış sinyalini kontrol et
+                    const exitSignal = isLong ? 'EXIT_BUY' : 'EXIT_SELL';
+                    const exitSignals = signals.filter(s => s.signal === exitSignal);
+                    
+                    if (exitSignals.length > 0) {
+                        // En az bir strateji çıkış sinyali verdiyse, pozisyonu kapat
+                        const bestExitSignal = exitSignals[0]; // İlk bulduğumuz çıkış sinyalini kullan
+                        await this.closePosition(position, currentPrice, `${bestExitSignal.strategyName || 'strategy'}_exit_signal`);
+                        logger.info(`Closed ${isLong ? 'LONG' : 'SHORT'} position for ${symbol} based on ${bestExitSignal.strategyName || 'strategy'} exit signal`);
+                        return;
+                    }
+                }
+            } else {
+                // Belirli bir strateji için çıkış sinyali kontrolü yap
+                try {
+                    const timeframe = positionStrategy.preferredTimeframe || '1h';
+                    const strategyCandles = mtfData?.candles?.[timeframe] || candles;
+                    
+                    const result = await positionStrategy.generateSignal(strategyCandles, symbol);
+                    
+                    if ((isLong && result.signal === 'EXIT_BUY') || (isShort && result.signal === 'EXIT_SELL')) {
+                        // Strateji çıkış sinyali verdiyse, pozisyonu kapat
+                        await this.closePosition(position, currentPrice, `${strategyUsed}_exit_signal`);
+                        logger.info(`Closed ${isLong ? 'LONG' : 'SHORT'} position for ${symbol} based on ${strategyUsed} exit signal`);
+                        return;
+                    }
+                } catch (error) {
+                    logger.error(`Error checking exit signal with ${strategyUsed} for ${symbol}: ${error.message}`);
+                }
+            }
             
             // Ortalama giriş fiyatını hesapla
             const avgEntryPrice = entryPrices.reduce((sum, price) => sum + parseFloat(price), 0) / entryPrices.length;
