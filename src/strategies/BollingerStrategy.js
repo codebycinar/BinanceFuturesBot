@@ -5,10 +5,13 @@ const ti = require('technicalindicators');
 const config = require('../config/config');
 
 class BollingerStrategy {
-  constructor(strategyName) {
-    this.strategyName = strategyName;
-    this.parameters = config.strategy;
-  }
+    constructor(strategyName, config = {}) {
+        this.strategyName = strategyName;
+        this.parameters = config.strategy || config;
+        
+        // Bollinger Bands için orta vadeli bir zaman dilimi tercih edilir
+        this.preferredTimeframe = config.preferredTimeframe || '1h';
+    }
 
   async loadParameters() {
     const strategy = await Strategy.findOne({ where: { name: this.strategyName } });
@@ -112,12 +115,46 @@ class BollingerStrategy {
       return { bb: null };
     }
 
-    try {
-      const bb = this.calculateBollingerBands(closes, this.parameters.bbPeriod, this.parameters.bbStdDev);
-      return { bb: bb.length > 0 ? bb[bb.length - 1] : null };
-    } catch (error) {
-      logger.error('Error calculating Bollinger Bands:', error.message);
-      return { bb: null };
+    calculateIndicators(candles) {
+        // Girdi kontrolü
+        if (!candles || !Array.isArray(candles) || candles.length === 0) {
+            logger.error('Invalid candles data provided to calculateIndicators');
+            return { bb: null };
+        }
+        
+        // Parametre kontrolü
+        if (!this.parameters || !this.parameters.bbPeriod) {
+            logger.error('Bollinger Band parameters are missing, using default values');
+            this.parameters = {
+                ...this.parameters,
+                bbPeriod: 20,
+                bbStdDev: 2
+            };
+        }
+        
+        const closes = candles.map(c => parseFloat(c.close)).filter(price => !isNaN(price));
+        
+        if (closes.length < this.parameters.bbPeriod) {
+            logger.error(`Not enough valid price data to calculate Bollinger Bands (${closes.length} < ${this.parameters.bbPeriod})`);
+            return { bb: null };
+        }
+
+        try {
+            const bb = this.calculateBollingerBands(closes, this.parameters.bbPeriod, this.parameters.bbStdDev);
+            
+            if (!bb || bb.length === 0) {
+                logger.error('Bollinger Bands calculation returned empty result');
+                return { bb: null };
+            }
+            
+            const result = { bb: bb[bb.length - 1] };
+            logger.info(`Calculated Bollinger Bands: Upper=${result.bb.upper.toFixed(4)}, Lower=${result.bb.lower.toFixed(4)}, Basis=${result.bb.basis.toFixed(4)}`);
+            return result;
+        } catch (error) {
+            logger.error('Error calculating Bollinger Bands:', error.message);
+            logger.error(error.stack);
+            return { bb: null };
+        }
     }
   }
 
@@ -321,43 +358,24 @@ class BollingerStrategy {
         })
         .filter(Boolean); // Null olanları çıkar
 
-      const unmetConditionsMessage = unmetConditions.join(", ");
-      logger.info(`Weak BUY signal detected for ${symbol}. Not opening a position. Unmet conditions: ${unmetConditionsMessage}`);
-      return { signal: 'WEAK_BUY', stopLoss, takeProfit, allocation, rsi, adx, bbBasis, stochasticK, atr, unmetConditions: unmetConditionsMessage };
-    } else if (weakSellConditions) {
-      const unmetConditions = sellConditionNames
-        .map((conditionName, index) => {
-          if (!strongSellConditions[index]) {
-            // Koşulun o anki değerini hesapla
-            let currentValue = '';
-            switch (conditionName) {
-              case "Price Above Upper Bollinger Band":
-                currentValue = `Current Price: ${lastClose}, Upper BB: ${bb.upper}`;
-                break;
-              case "Stochastic K Above 75":
-                currentValue = `Stochastic K: ${stochasticK}`;
-                break;
-              case "ATR Trend Down":
-                currentValue = `ATR Trend: ${atr.trend}`;
-                break;
-              case "RSI Above 75":
-                currentValue = `RSI: ${rsi}`;
-                break;
-              case "ADX Above 20":
-                currentValue = `ADX: ${adx}`;
-                break;
-              default:
-                currentValue = 'Unknown';
-            }
-            return `${conditionName} (${currentValue})`;
-          }
-          return null; // Karşılanan koşulları filtrele
-        })
-        .filter(Boolean); // Null olanları çıkar
-
-      const unmetConditionsMessage = unmetConditions.join(", ");
-      logger.info(`Weak SELL signal detected for ${symbol}. Not opening a position. Unmet conditions: ${unmetConditionsMessage}`);
-      return { signal: 'WEAK_SELL', stopLoss, takeProfit, allocation, rsi, adx, bbBasis, stochasticK, atr, unmetConditions: unmetConditionsMessage };
+        logger.info(`No actionable signal for ${symbol}`);
+        
+        // NEUTRAL durumda bile stop loss ve take profit hesapla
+        // Bollinger bant mesafesine göre bir risk hesaplaması yap
+        const bandWidth = bb.upper - bb.lower;
+        const riskPercentage = 0.5; // Risk yüzdesi
+        
+        // Varsayılan olarak ATR kullanarak daha dinamik stop loss/take profit hesapla
+        stopLoss = lastClose - (atr.current * 2); // 2x ATR aşağıda stop loss
+        takeProfit = lastClose + (atr.current * 3); // 3x ATR yukarıda take profit (1:1.5 risk/ödül oranı)
+        
+        return { 
+            signal: 'NEUTRAL', 
+            stopLoss, 
+            takeProfit, 
+            allocation,
+            unmetConditions: 'No trading signal detected, monitoring only'
+        };
     }
 
     logger.info(`No actionable signal for ${symbol}`);

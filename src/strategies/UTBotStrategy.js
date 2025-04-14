@@ -2,7 +2,7 @@
 
 const ti = require('technicalindicators');
 
-class UTBotStrategy {
+class UTBotStrategy {""
     constructor(config = {}) {
         // Göstergeler için ayarlar
         this.keyValue = config.keyValue || 1; // 'a' parametresi
@@ -14,6 +14,10 @@ class UTBotStrategy {
 
         // Önceki pozisyon
         this.pos = 0;
+    }
+
+    async initialize() {
+        console.log(`UTBotStrategy Loaded `);
     }
 
     /**

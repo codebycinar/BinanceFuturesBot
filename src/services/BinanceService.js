@@ -17,7 +17,7 @@ class BinanceService {
       apiSecret: config.apiSecret,
       futures: true, // Futures modunu etkinleştir
       useServerTime: true,
-      recvWindow: 10000,
+      recvWindow: 60000, // 60 saniye olarak artırıldı
       //baseUrl: config.testnet ? 'https://testnet.binancefuture.com' : undefined // Testnet URL'si
     });
 
@@ -25,18 +25,91 @@ class BinanceService {
   }
 
   /**
+   * Check current position mode and set it in the config
+   * Binance API'sinden pozisyon modunu alır ve config'i günceller
+   */
+  async checkAndSetPositionMode() {
+    try {
+      // API isteğini timeout ve retry ile yap
+      try {
+        // Timestamp oluştur
+        const timestamp = Date.now();
+        const queryString = `timestamp=${timestamp}`;
+        
+        // Binance API'si için HMAC-SHA256 imzası oluştur
+        const signature = require('crypto')
+          .createHmac('sha256', config.apiSecret)
+          .update(queryString)
+          .digest('hex');
+        
+        // Endpoint URL'i
+        const url = `https://fapi.binance.com/fapi/v1/positionSide/dual?${queryString}&signature=${signature}`;
+        
+        // API yanıtını al (timeout ve retry ile)
+        const response = await axios({
+          method: 'GET',
+          url: url,
+          headers: { 
+            'X-MBX-APIKEY': config.apiKey,
+            'User-Agent': 'BinanceFuturesBot/1.0' // Custom User-Agent
+          },
+          timeout: 10000 // 10 saniye timeout
+        });
+        
+        // API yanıtını işle
+        const dualSidePosition = response.data.dualSidePosition;
+        
+        // Pozisyon modunu belirle (true = Hedge Mode, false = One-Way Mode)
+        this.positionSideMode = dualSidePosition ? 'Hedge' : 'One-Way';
+        
+        // Config'i güncelle
+        config.positionSideMode = this.positionSideMode;
+        
+        logger.info(`Detected account position mode from Binance: ${this.positionSideMode}`);
+      } catch (apiError) {
+        // Ağ hatası mı?
+        const isNetworkError = apiError.code === 'ECONNABORTED' || 
+                              apiError.message.includes('timeout') || 
+                              apiError.message.includes('socket') ||
+                              apiError.message.includes('network');
+        
+        if (isNetworkError) {
+          logger.error(`Network error fetching position mode from Binance: ${apiError.message}`);
+          logger.info(`Using default position mode: ${this.positionSideMode}. Please check your network connection.`);
+        } else {
+          logger.error(`Error fetching position mode from Binance: ${apiError.message}`);
+          if (apiError.response) {
+            logger.error(`API response: ${JSON.stringify(apiError.response.data)}`);
+          }
+          logger.info(`Using configured position mode: ${this.positionSideMode}. Please ensure this matches your Binance account settings.`);
+        }
+      }
+    } catch (error) {
+      logger.error('Error checking position mode:', error);
+      logger.info(`Using configured position mode: ${this.positionSideMode}. Please ensure this matches your Binance account settings.`);
+    }
+  }
+
+  /**
 * Borsada TRADING durumunda olan tüm sembolleri döndürür.
 */
   async scanAllSymbols() {
     try {
-      const exchangeInfo = await this.client.futuresExchangeInfo();
-      const tradingSymbols = exchangeInfo.symbols
-        .filter(symbolInfo => symbolInfo.status === 'TRADING')
-        .map(symbolInfo => symbolInfo.symbol);
+      // retryableRequest ile ağ hatalarına karşı dayanıklı hale getir
+      return await this.retryableRequest(
+        async () => {
+          const exchangeInfo = await this.client.futuresExchangeInfo();
+          const tradingSymbols = exchangeInfo.symbols
+            .filter(symbolInfo => symbolInfo.status === 'TRADING')
+            .map(symbolInfo => symbolInfo.symbol);
 
-      // Yalnızca USDT ile bitenler
-      const usdtSymbols = tradingSymbols.filter(sym => sym.endsWith('USDT'));
-      return usdtSymbols;
+          // Yalnızca USDT ile bitenler
+          const usdtSymbols = tradingSymbols.filter(sym => sym.endsWith('USDT'));
+          return usdtSymbols;
+        }, 
+        'scanAllSymbols',
+        3  // 3 kez deneme yap
+      );
     } catch (error) {
       logger.error('Error fetching all symbols:', error);
       throw error;
@@ -44,30 +117,53 @@ class BinanceService {
   }
 
   /**
-   * Timeframe mumlarını alma
+   * Mumları alma
+   * @param {string} symbol - İşlem sembolü (örn. BTCUSDT)
+   * @param {string} interval - Zaman dilimi (örn. 1m, 5m, 15m, 1h, 4h, 1d)
+   * @param {number} limit - Alınacak mum sayısı
+   * @param {number} startTime - Başlangıç zamanı (opsiyonel)
+   * @param {number} endTime - Bitiş zamanı (opsiyonel)
    */
-  async getCandles(symbol, interval = '1d', limit = 100) {
+  async getCandles(symbol, interval = '1h', limit = 100, startTime = null, endTime = null) {
     try {
-      
-      const candles = await this.client.futuresCandles({ symbol, interval, limit });
+      // retryableRequest ile ağ hatalarına karşı dayanıklı hale getir
+      return await this.retryableRequest(
+        async () => {
+          // Fiyat verisini almak için parametreleri hazırla
+          const params = {
+            symbol,
+            interval,
+            limit
+          };
 
-      const validCandles = candles.map(c => ({
-        open: c.open,
-        high: c.high,
-        low: c.low,
-        close: c.close,
-        volume: c.volume,
-        timestamp: c.closeTime,
-      })).filter(c => !isNaN(c.close));
+          // Opsiyonel başlangıç ve bitiş zamanları
+          if (startTime) params.startTime = startTime;
+          if (endTime) params.endTime = endTime;
 
-      if (validCandles.length < limit) {
-        logger.warn(`Insufficient candles fetched for ${symbol}: ${validCandles.length}/${limit}`);
-      }
+          logger.info(`Fetching candles for ${symbol}, interval: ${interval}, limit: ${limit}`);
 
-      return validCandles;
+          // Binance API'sinden mum verisini al
+          const candles = await this.client.futuresCandles(params);
+
+          // Veriyi dönüştür
+          const formattedCandles = candles.map(c => ({
+            open: parseFloat(c.open),
+            high: parseFloat(c.high),
+            low: parseFloat(c.low),
+            close: parseFloat(c.close),
+            volume: parseFloat(c.volume),
+            timestamp: c.closeTime,
+          })).filter(c => !isNaN(c.close));
+
+          logger.info(`Received ${formattedCandles.length} candles for ${symbol}`);
+          return formattedCandles;
+        },
+        `getCandles for ${symbol} (${interval})`,
+        3 // 3 kez deneme yap
+      );
     } catch (error) {
-      logger.error(`Error fetching candles for ${symbol}:`, error);
-      return [];
+      logger.error(`Error fetching candles for ${symbol} after retries:`, error);
+      return []; // Hata durumunda boş dizi döndür
     }
   }
 
@@ -76,10 +172,17 @@ class BinanceService {
     */
   async getOpenPositions() {
     try {
-      const positions = await this.client.futuresPositionRisk();
-      return positions.filter(position => parseFloat(position.positionAmt) !== 0);
+      // retryableRequest ile ağ hatalarına karşı dayanıklı hale getir
+      return await this.retryableRequest(
+        async () => {
+          const positions = await this.client.futuresPositionRisk();
+          return positions.filter(position => parseFloat(position.positionAmt) !== 0);
+        },
+        'getOpenPositions',
+        3 // 3 kez deneme yap
+      );
     } catch (error) {
-      logger.error('Error fetching open positions:', error);
+      logger.error('Error fetching open positions after retries:', error);
       throw error;
     }
   }
@@ -89,9 +192,16 @@ class BinanceService {
      */
   async getOpenOrders(symbol) {
     try {
-      return await this.client.futuresOpenOrders({ symbol });
+      // retryableRequest ile ağ hatalarına karşı dayanıklı hale getir
+      return await this.retryableRequest(
+        async () => {
+          return await this.client.futuresOpenOrders({ symbol });
+        },
+        `getOpenOrders for ${symbol || 'all symbols'}`,
+        3 // 3 kez deneme yap
+      );
     } catch (error) {
-      logger.error('Error fetching open orders:', error);
+      logger.error('Error fetching open orders after retries:', error);
       throw error;
     }
   }
@@ -101,10 +211,17 @@ class BinanceService {
    */
   async getCurrentPrice(symbol) {
     try {
-      const ticker = await this.client.futuresPrices({ symbol });
-      return parseFloat(ticker[symbol]);
+      // retryableRequest ile ağ hatalarına karşı dayanıklı hale getir
+      return await this.retryableRequest(
+        async () => {
+          const ticker = await this.client.futuresPrices({ symbol });
+          return parseFloat(ticker[symbol]);
+        },
+        `getCurrentPrice for ${symbol}`,
+        3 // 3 kez deneme yap
+      );
     } catch (error) {
-      logger.error(`Error fetching current price for ${symbol}:`, error);
+      logger.error(`Error fetching current price for ${symbol} after retries:`, error);
       throw error;
     }
   }
@@ -127,19 +244,136 @@ class BinanceService {
      */
   async placeMarketOrder({ symbol, side, quantity, positionSide }) {
     try {
-      const orderData = {
+      // Exchange info'yu kontrol et
+      await this.getExchangeInfo();
+      const quantityPrecision = this.getQuantityPrecision(symbol);
+      const adjustedQuantity = parseFloat(quantity).toFixed(quantityPrecision);
+      
+      logger.info(`Original quantity: ${quantity}, Adjusted quantity: ${adjustedQuantity}, Precision: ${quantityPrecision} for ${symbol}`);
+      
+      // Check the position mode (Hedge Mode or One-Way Mode)
+      const isHedgeMode = config.positionSideMode === 'Hedge';
+      logger.info(`Position Mode: ${config.positionSideMode}, Is Hedge Mode: ${isHedgeMode}`);
+      
+      // Prepare parameters
+      const timestamp = Date.now();
+      const params = new URLSearchParams({
         symbol,
         side,
         type: 'MARKET',
-        quantity,
-        positionSide,
-      };
-
-      logger.info(`Sending MARKET order to Binance:`, orderData);
-      return await this.client.futuresOrder(orderData);
+        quantity: adjustedQuantity,
+        timestamp
+      });
+      
+      // Add positionSide parameter only if specifically provided AND in Hedge Mode
+      if (positionSide !== undefined && positionSide !== null) {
+        if (isHedgeMode) {
+          // Validate and normalize positionSide value
+          let normalizedPositionSide = positionSide;
+          
+          // Binance API only accepts LONG, SHORT or BOTH as positionSide values
+          if (!['LONG', 'SHORT', 'BOTH'].includes(normalizedPositionSide)) {
+            // Default to BOTH if invalid value
+            logger.warn(`Invalid positionSide value: ${normalizedPositionSide}, defaulting to 'BOTH'`);
+            normalizedPositionSide = 'BOTH';
+          }
+          
+          // BOTH pozisyon tarafını da Hedge modunda gönderme (One-Way benzeri davranış)
+          if (normalizedPositionSide !== 'BOTH') {
+            params.append('positionSide', normalizedPositionSide);
+            logger.info(`Adding positionSide=${normalizedPositionSide} parameter for Hedge Mode`);
+          } else {
+            logger.info(`Omitting BOTH positionSide parameter, treating like One-Way Mode`);
+          }
+        } else {
+          logger.info(`Omitting positionSide parameter for One-Way Mode, even though provided: ${positionSide}`);
+        }
+      } else {
+        logger.info(`No positionSide provided, omitting parameter`);
+      }
+      
+      // Binance API'si için HMAC-SHA256 imzası oluştur
+      const signature = require('crypto')
+        .createHmac('sha256', config.apiSecret)
+        .update(params.toString())
+        .digest('hex');
+      
+      params.append('signature', signature);
+      
+      const url = 'https://fapi.binance.com/fapi/v1/order';
+      logger.info(`Sending direct MARKET order to Binance API: ${params.toString()}`);
+      
+      // First, try to do a test order to validate parameters
+      try {
+        const testUrl = 'https://fapi.binance.com/fapi/v1/order/test';
+        await axios({
+          method: 'POST',
+          url: testUrl,
+          headers: { 'X-MBX-APIKEY': config.apiKey },
+          data: params.toString()
+        });
+        logger.info(`Test order successful for ${symbol}`);
+      } catch (testError) {
+        logger.error(`Test order failed for ${symbol}: ${testError.message}`);
+        if (testError.response) {
+          logger.error(`Test API response: ${JSON.stringify(testError.response.data)}`);
+        }
+        throw testError;
+      }
+      
+      // Now place the real order
+      const response = await axios({
+        method: 'POST',
+        url: url,
+        headers: { 'X-MBX-APIKEY': config.apiKey },
+        data: params.toString()
+      });
+      
+      return response.data;
     } catch (error) {
       logger.error(`Error in Binance API MARKET order for ${symbol}:`, error);
+      if (error.response) {
+        logger.error(`API response: ${JSON.stringify(error.response.data)}`);
+      }
       throw error;
+    }
+  }
+
+  /**
+   * GÜVENLI_MIKTAR: Miktarı belirli bir hassasiyete göre ayarlar
+   * Tamamen sıfırdan yazılmış, toFixed() kullanmayan güvenli bir fonksiyon
+   */
+  adjustPrecision(value, stepSize) {
+    try {
+      // Adım boyutunu kullanarak miktarı hizala
+      const adjustedValue = Math.floor(value / stepSize) * stepSize;
+
+      // Negatif değer kontrolü
+      if (adjustedValue <= 0) {
+        logger.warn(`Adjusted value (${adjustedValue}) is less than or equal to zero`);
+        return "0"; // Binance 0'dan büyük değer istiyor
+      }
+
+      // Hassasiyeti stepSize'ın ondalık basamaklarına göre hesapla
+      const stepSizeStr = stepSize.toString();
+      let precision = 0;
+
+      // Bilimsel gösterim kontrolü (örn: 1e-4)
+      if (stepSizeStr.includes('e-')) {
+        precision = parseInt(stepSizeStr.split('e-')[1]);
+      }
+      // Ondalık basamak sayısını bul
+      else if (stepSizeStr.includes('.')) {
+        precision = stepSizeStr.split('.')[1].length;
+      }
+
+      // toFixed için hassasiyeti güvenli aralıkta tut
+      const safePrecision = Math.min(Math.max(precision, 0), 8);
+
+      return parseFloat(adjustedValue.toFixed(safePrecision)).toString();
+    } catch (error) {
+      logger.error(`Error in adjustPrecision: ${error}`);
+      return "0";
     }
   }
 
@@ -159,7 +393,7 @@ class BinanceService {
       const stepSize = parseFloat(this.exchangeInfo[symbol].filters.LOT_SIZE.stepSize);
       const tickSize = parseFloat(this.exchangeInfo[symbol].filters.PRICE_FILTER.tickSize);
 
-      const adjustedQuantity = parseFloat(quantity).toFixed(quantityPrecision);
+      const adjustedQuantity = parseFloat(this.adjustPrecision(quantity, quantityPrecision));
       const adjustedPrice = parseFloat(limitPrice).toFixed(pricePrecision);
 
       if (adjustedQuantity <= 0 || adjustedQuantity % stepSize !== 0) {
@@ -169,15 +403,27 @@ class BinanceService {
         throw new Error(`Invalid price after adjustment: ${adjustedPrice}`);
       }
 
+      // Check the position mode (Hedge Mode or One-Way Mode)
+      const isHedgeMode = config.positionSideMode === 'Hedge';
+      logger.info(`Position Mode for Limit Order: ${config.positionSideMode}, Is Hedge Mode: ${isHedgeMode}`);
+
+      // Prepare order data based on position mode
       const orderData = {
         symbol,
         side,
         type: 'LIMIT',
         price: adjustedPrice,
         quantity: adjustedQuantity,
-        timeInForce: 'GTC',
-        positionSide,
+        timeInForce: 'GTC'
       };
+      
+      // Add positionSide only if in Hedge Mode
+      if (isHedgeMode && positionSide) {
+        orderData.positionSide = positionSide;
+        logger.info(`Adding positionSide=${positionSide} for Limit Order in Hedge Mode`);
+      } else {
+        logger.info(`Omitting positionSide for Limit Order in One-Way Mode`);
+      }
 
       logger.info('Placing LIMIT order:', orderData);
       return await this.client.futuresOrder(orderData);
@@ -189,36 +435,94 @@ class BinanceService {
 
   async placeStopLossOrder({ symbol, side, quantity, stopPrice, positionSide }) {
     try {
+      // Get exchange info if not already loaded
+      if (!this.exchangeInfo) {
+        await this.getExchangeInfo();
+      }
+
+      // Get price and quantity precision for the symbol
+      const pricePrecision = this.getPricePrecision(symbol);
+      const quantityPrecision = this.getQuantityPrecision(symbol);
+
+      // Adjust price and quantity using our helper methods
+      const adjustedStopPrice = this.adjustPrecision(stopPrice, pricePrecision);
+      const adjustedQuantity = this.adjustPrecision(quantity, quantityPrecision);
+
+      logger.info(`Stop Loss - Original quantity: ${quantity}, Adjusted: ${adjustedQuantity}, Precision: ${quantityPrecision}`);
+      logger.info(`Stop Loss - Original price: ${stopPrice}, Adjusted: ${adjustedStopPrice}, Precision: ${pricePrecision}`);
+
+      // Check the position mode (Hedge Mode or One-Way Mode)
+      const isHedgeMode = config.positionSideMode === 'Hedge';
+      logger.info(`Position Mode for Stop Loss: ${config.positionSideMode}, Is Hedge Mode: ${isHedgeMode}`);
+
+      // Prepare order data based on position mode
       const orderData = {
         symbol,
         side,
         type: 'STOP_MARKET',
-        stopPrice: stopPrice.toString(),
-        quantity: quantity.toString(),
-        positionSide
+        stopPrice: adjustedStopPrice,
+        quantity: adjustedQuantity
       };
-      console.log(`Stop Loss emri yerleştiriliyor: ${symbol}`, orderData);
-      return await this.client.futuresOrder(orderData); // Düzeltildi: this.binanceService.client -> this.client
+
+      // Add positionSide only if in Hedge Mode
+      if (isHedgeMode && positionSide) {
+        orderData.positionSide = positionSide;
+        logger.info(`Adding positionSide=${positionSide} for Stop Loss in Hedge Mode`);
+      } else {
+        logger.info(`Omitting positionSide for Stop Loss in One-Way Mode`);
+      }
+
+      logger.info(`Placing Stop Loss order for ${symbol}:`, orderData);
+      return await this.client.futuresOrder(orderData);
     } catch (error) {
-      console.error(`Stop Loss emri hatası (${symbol}):`, error);
+      logger.error(`Error placing Stop Loss order for ${symbol}:`, error);
       throw error;
     }
   }
 
   async placeTakeProfitOrder({ symbol, side, quantity, stopPrice, positionSide }) {
     try {
+      // Get exchange info if not already loaded
+      if (!this.exchangeInfo) {
+        await this.getExchangeInfo();
+      }
+
+      // Get price and quantity precision for the symbol
+      const pricePrecision = this.getPricePrecision(symbol);
+      const quantityPrecision = this.getQuantityPrecision(symbol);
+
+      // Adjust price and quantity using our helper methods
+      const adjustedStopPrice = this.adjustPrecision(stopPrice, pricePrecision);
+      const adjustedQuantity = this.adjustPrecision(quantity, quantityPrecision);
+
+      logger.info(`Take Profit - Original quantity: ${quantity}, Adjusted: ${adjustedQuantity}, Precision: ${quantityPrecision}`);
+      logger.info(`Take Profit - Original price: ${stopPrice}, Adjusted: ${adjustedStopPrice}, Precision: ${pricePrecision}`);
+
+      // Check the position mode (Hedge Mode or One-Way Mode)
+      const isHedgeMode = config.positionSideMode === 'Hedge';
+      logger.info(`Position Mode for Take Profit: ${config.positionSideMode}, Is Hedge Mode: ${isHedgeMode}`);
+
+      // Prepare order data based on position mode
       const orderData = {
         symbol,
         side,
         type: 'TAKE_PROFIT_MARKET',
-        stopPrice: stopPrice.toString(),
-        quantity: quantity.toString(),
-        positionSide
+        stopPrice: adjustedStopPrice,
+        quantity: adjustedQuantity
       };
-      console.log(`Take Profit emri yerleştiriliyor: ${symbol}`, orderData);
-      return await this.client.futuresOrder(orderData); // Düzeltildi: this.binanceService.client -> this.client
+
+      // Add positionSide only if in Hedge Mode
+      if (isHedgeMode && positionSide) {
+        orderData.positionSide = positionSide;
+        logger.info(`Adding positionSide=${positionSide} for Take Profit in Hedge Mode`);
+      } else {
+        logger.info(`Omitting positionSide for Take Profit in One-Way Mode`);
+      }
+
+      logger.info(`Placing Take Profit order for ${symbol}:`, orderData);
+      return await this.client.futuresOrder(orderData);
     } catch (error) {
-      console.error(`Take Profit emri hatası (${symbol}):`, error);
+      logger.error(`Error placing Take Profit order for ${symbol}:`, error);
       throw error;
     }
   }
@@ -234,14 +538,26 @@ class BinanceService {
       // 2) Miktarı bu precision’a göre ayarlayalım
       const adjustedQuantity = parseFloat(quantity).toFixed(quantityPrecision);
 
+      // Check the position mode (Hedge Mode or One-Way Mode)
+      const isHedgeMode = config.positionSideMode === 'Hedge';
+      logger.info(`Position Mode for Trailing Stop: ${config.positionSideMode}, Is Hedge Mode: ${isHedgeMode}`);
+
+      // Prepare order data based on position mode
       const orderData = {
         symbol,
         side,
         type: 'TRAILING_STOP_MARKET',
         quantity: adjustedQuantity,
-        callbackRate: callbackRate.toString(),
-        positionSide: positionSide
+        callbackRate: callbackRate.toString()
       };
+      
+      // Add positionSide only if in Hedge Mode
+      if (isHedgeMode && positionSide) {
+        orderData.positionSide = positionSide;
+        logger.info(`Adding positionSide=${positionSide} for Trailing Stop in Hedge Mode`);
+      } else {
+        logger.info(`Omitting positionSide for Trailing Stop in One-Way Mode`);
+      }
 
       logger.info(`Placing TRAILING_STOP_MARKET order:`, orderData);
       return await this.client.futuresOrder(orderData);
@@ -262,32 +578,284 @@ class BinanceService {
       const positionSide = side === 'BUY' ? 'SHORT' : 'LONG'; // Hedge moduna göre ayarla
       const quantity = await this.getPositionSize(symbol); // Mevcut pozisyon boyutunu al
 
-      return await this.client.futuresOrder({
+      // Açık pozisyon bilgilerini al
+      const openPositions = await this.getOpenPositions();
+      const position = openPositions.find(pos => pos.symbol === symbol);
+
+      if (!position) {
+        throw new Error(`No open position found for ${symbol}`);
+      }
+
+      const positionSize = Math.abs(parseFloat(position.positionAmt));
+      if (positionSize === 0) {
+        throw new Error(`Position size for ${symbol} is zero.`);
+      }
+
+      // Pozisyon boyutunu hassasiyete göre ayarla
+      const quantityPrecision = symbolInfo.quantityPrecision;
+      const adjustedQuantity = positionSize.toFixed(quantityPrecision);
+
+      // Mevcut fiyatı al
+      const currentPrice = await this.getCurrentPrice(symbol);
+
+      // Pozisyonun giriş fiyatını al
+      const entryPrice = parseFloat(position.entryPrice);
+
+      // Kar/Zarar hesaplama
+      const profitLoss = (currentPrice - entryPrice) * positionSize * (side === 'SELL' ? 1 : -1); // Long için ters işlem
+      const profitLossUSDT = profitLoss.toFixed(2); // USDT cinsinden yuvarlama
+
+      // Check the position mode (Hedge Mode or One-Way Mode)
+      const isHedgeMode = config.positionSideMode === 'Hedge';
+      logger.info(`Position Mode for Close Position: ${config.positionSideMode}, Is Hedge Mode: ${isHedgeMode}`);
+
+      // Prepare order data based on position mode
+      const orderData = {
         symbol,
         side,
         type: 'MARKET',
-        quantity,
-        positionSide,
-        reduceOnly: true
-      });
+        quantity: adjustedQuantity
+      };
+      
+      // Check if position has a positionSide field and it's not BOTH
+      if (position.positionSide && position.positionSide !== 'BOTH') {
+        if (isHedgeMode) {
+          // Validate and normalize positionSide value
+          let normalizedPositionSide = position.positionSide;
+          
+          // Binance API only accepts LONG, SHORT or BOTH as positionSide values
+          if (!['LONG', 'SHORT', 'BOTH'].includes(normalizedPositionSide)) {
+            // Default to BOTH if invalid value
+            logger.warn(`Invalid positionSide value: ${normalizedPositionSide}, defaulting to 'BOTH'`);
+            normalizedPositionSide = 'BOTH';
+          }
+          
+          // Eğer pozisyon tarafı 'BOTH' değilse, positionSide parametresini ekle
+          if (normalizedPositionSide !== 'BOTH') {
+            orderData.positionSide = normalizedPositionSide;
+            logger.info(`Adding positionSide=${normalizedPositionSide} for Close Position in Hedge Mode`);
+          } else {
+            logger.info(`Omitting BOTH positionSide for Close Position`);
+          }
+        } else {
+          logger.info(`Account is in One-Way Mode, omitting positionSide=${position.positionSide}`);
+        }
+      } else {
+        logger.info(`Position doesn't have positionSide or it's BOTH, omitting parameter`);
+      }
+      
+      // Satış işlemini gerçekleştir
+      logger.info(`Closing position with order:`, orderData);
+      const order = await this.client.futuresOrder(orderData);
+
+      // Başarılı işlem detaylarını logla
+      const successMessage = `
+          ✅ Position Closed Successfully:
+          - Symbol: ${symbol}
+          - Side: ${side}
+          - Quantity: ${adjustedQuantity}
+          - Entry Price: ${entryPrice}
+          - Close Price: ${currentPrice}
+          - Profit/Loss: ${profitLossUSDT} USDT
+          - Order ID: ${order.orderId || 'N/A'}
+      `;
+
+      // Sadece loglama yap, mesajı positionManager'dan gönderelim
+      logger.info(successMessage);
+
+      return order;
     } catch (error) {
-      logger.error(`Pozisyon kapatma hatası (${symbol}):`, error);
+      const errorMessage = `
+          ❌ Error Closing Position:
+          - Symbol: ${symbol}
+          - Side: ${side}
+          - Error: ${error.message}
+      `;
+      // Sadece loglama yap, mesajı positionManager'dan gönderelim
+      logger.error(errorMessage);
       throw error;
+    }
+  }
+
+
+  getPrecision(symbol) {
+    if (!this.exchangeInfo || !this.exchangeInfo.symbols) {
+      throw new Error('Exchange info is not loaded');
+    }
+
+    const symbolInfo = this.exchangeInfo.symbols.find(s => s.symbol === symbol);
+    if (!symbolInfo) {
+      throw new Error(`Symbol ${symbol} not found in exchange info`);
+    }
+
+    const lotSizeFilter = symbolInfo.filters.find(f => f.filterType === 'LOT_SIZE');
+    if (!lotSizeFilter) {
+      throw new Error(`LOT_SIZE filter not found for ${symbol}`);
+    }
+
+    return parseFloat(lotSizeFilter.stepSize);
+  }
+
+
+  roundQuantity(quantity, stepSize) {
+    const precision = Math.floor(Math.log10(1 / stepSize));
+    return parseFloat(quantity.toFixed(precision));
+  }
+
+  /**
+   * Tüm açık emirleri iptal etme (doğrudan Binance API üzerinden)
+   */
+  async cancelAllOpenOrders(symbol) {
+    try {
+      logger.info(`Cancelling all open orders for ${symbol} using direct API call`);
+      
+      const timestamp = Date.now();
+      const params = new URLSearchParams({
+        symbol,
+        timestamp
+      });
+      
+      // Binance API'si için HMAC-SHA256 imzası oluştur
+      const signature = require('crypto')
+        .createHmac('sha256', config.apiSecret)
+        .update(params.toString())
+        .digest('hex');
+      
+      params.append('signature', signature);
+      
+      const url = 'https://fapi.binance.com/fapi/v1/allOpenOrders';
+      
+      try {
+        const response = await axios({
+          method: 'DELETE',
+          url: url,
+          headers: { 'X-MBX-APIKEY': config.apiKey },
+          params: new URLSearchParams(params)
+        });
+        
+        logger.info(`Successfully cancelled all open orders for ${symbol}`);
+        return true;
+      } catch (apiError) {
+        logger.error(`Error cancelling all open orders for ${symbol}:`, apiError.message);
+        if (apiError.response) {
+          logger.error(`API response: ${JSON.stringify(apiError.response.data)}`);
+        }
+        
+        // Açık emirleri al ve tek tek iptal etmeyi dene
+        const openOrdersUrl = 'https://fapi.binance.com/fapi/v1/openOrders';
+        const openOrdersParams = new URLSearchParams({
+          symbol,
+          timestamp: Date.now()
+        });
+        
+        const openOrdersSignature = require('crypto')
+          .createHmac('sha256', config.apiSecret)
+          .update(openOrdersParams.toString())
+          .digest('hex');
+        
+        openOrdersParams.append('signature', openOrdersSignature);
+        
+        const openOrdersResponse = await axios({
+          method: 'GET',
+          url: openOrdersUrl,
+          headers: { 'X-MBX-APIKEY': config.apiKey },
+          params: new URLSearchParams(openOrdersParams)
+        });
+        
+        const openOrders = openOrdersResponse.data;
+        
+        if (openOrders && openOrders.length > 0) {
+          logger.info(`Found ${openOrders.length} open orders for ${symbol}, trying individual cancellations`);
+          
+          let cancelledCount = 0;
+          for (const order of openOrders) {
+            try {
+              const cancelParams = new URLSearchParams({
+                symbol,
+                orderId: order.orderId,
+                timestamp: Date.now()
+              });
+              
+              const cancelSignature = require('crypto')
+                .createHmac('sha256', config.apiSecret)
+                .update(cancelParams.toString())
+                .digest('hex');
+              
+              cancelParams.append('signature', cancelSignature);
+              
+              const cancelUrl = 'https://fapi.binance.com/fapi/v1/order';
+              
+              await axios({
+                method: 'DELETE',
+                url: cancelUrl,
+                headers: { 'X-MBX-APIKEY': config.apiKey },
+                params: new URLSearchParams(cancelParams)
+              });
+              
+              logger.info(`Cancelled order for ${symbol} with ID ${order.orderId}, type: ${order.type}`);
+              cancelledCount++;
+            } catch (individualError) {
+              logger.error(`Error cancelling individual order ${order.orderId} for ${symbol}: ${individualError.message}`);
+            }
+          }
+          
+          logger.info(`Individually cancelled ${cancelledCount}/${openOrders.length} orders for ${symbol}`);
+          return cancelledCount > 0;
+        } else {
+          logger.info(`No open orders found for ${symbol}`);
+          return true;
+        }
+      }
+    } catch (error) {
+      logger.error(`Error in cancelAllOpenOrders for ${symbol}:`, error);
+      // Don't throw the error, just return false to indicate failure
+      return false;
+    }
+  }
+  
+  /**
+   * Sadece reduce-only emirleri iptal etme (eski fonksiyon)
+   */
+  async cancelOpenOrders(symbol) {
+    try {
+      // O sembol için açık olan tüm emirleri al
+      const openOrders = await this.client.futuresOpenOrders({ symbol });
+
+      // Tüm açık emirleri iptal et
+      for (const order of openOrders) {
+        if (order.reduceOnly) { // Sadece reduce-only emirleri iptal et
+          await this.client.futuresCancelOrder({
+            symbol: symbol,
+            orderId: order.orderId,
+          });
+          logger.info(`Cancelled reduce-only order for ${symbol} with ID ${order.orderId}`);
+        }
+      }
+    } catch (error) {
+      logger.error(`Error cancelling open orders for ${symbol}:`, error);
     }
   }
 
   /**
    * ATR hesaplama fonksiyonu
    */
-  async calculateATR(symbol, period) {
+  async calculateATR(symbol, period, strategy = null) {
     try {
-      // Strateji parametrelerinden timeframe değerini al
-      const timeframe = this.parameters && this.parameters.donchiantimeframe ? this.parameters.donchiantimeframe : '1d';
+      // Strateji varsa onun tercih ettiği zaman dilimini kullan
+      // yoksa config'den veya varsayılan olarak 1h'ı kullan
+      let timeframe = '1h';
 
+      if (strategy && strategy.preferredTimeframe) {
+        timeframe = strategy.preferredTimeframe;
+      } else if (this.parameters && this.parameters.timeframe) {
+        timeframe = this.parameters.timeframe;
+      } else if (config.strategy && config.strategy.timeframe) {
+        timeframe = config.strategy.timeframe;
+      }
 
       const candles = await this.getCandles(symbol, timeframe, period + 1);
-      if (!candles || candles.length < period + 1) {
-        logger.warn(`No candles returned for ${symbol} in ATR calculation`);
+      if (candles.length < period + 1) {
+        logger.warn(`Not enough candles to calculate ATR for ${symbol} with timeframe ${timeframe}`);
         return undefined;
       }
 
@@ -352,18 +920,32 @@ class BinanceService {
    */
   async getFuturesBalance() {
     try {
-      const balances = await this.client.futuresAccountBalance();
-      const usdtBalance = balances.find(b => b.asset === 'USDT');
-      return usdtBalance ? parseFloat(usdtBalance.availableBalance) : 0;
+      // retryableRequest ile ağ hatalarına karşı dayanıklı hale getir
+      return await this.retryableRequest(
+        async () => {
+          const balances = await this.client.futuresAccountBalance();
+          const usdtBalance = balances.find(b => b.asset === 'USDT');
+          return usdtBalance ? parseFloat(usdtBalance.availableBalance) : 0;
+        },
+        'getFuturesBalance',
+        3 // 3 kez deneme yap
+      );
     } catch (error) {
-      logger.error('Error getting futures balance:', error);
+      logger.error('Error getting futures balance after retries:', error);
       throw error;
     }
   }
 
-  async fetchExchangeInfo() {
+  async fetchExchangeInfo(retryCount = 0) {
     try {
-      const response = await axios.get('https://fapi.binance.com/fapi/v1/exchangeInfo');
+      // Timeout ve retry konfigürasyonu ile axios isteği
+      const response = await axios.get('https://fapi.binance.com/fapi/v1/exchangeInfo', {
+        timeout: 10000, // 10 saniye timeout
+        headers: {
+          'User-Agent': 'BinanceFuturesBot/1.0' // Custom User-Agent
+        }
+      });
+      
       this.exchangeInfo = response.data.symbols.reduce((acc, symbol) => {
         acc[symbol.symbol] = {
           pricePrecision: symbol.pricePrecision,
@@ -377,7 +959,20 @@ class BinanceService {
       }, {});
       logger.info('Exchange info fetched and parsed successfully.');
     } catch (error) {
-      logger.error('Error fetching exchange info:', error.message);
+      // Network veya timeout hatası için yeniden deneme
+      if ((error.code === 'ECONNABORTED' || error.message.includes('timeout') || error.message.includes('socket')) && retryCount < 3) {
+        const nextRetry = retryCount + 1;
+        const delay = 1000 * Math.pow(2, retryCount); // Exponential backoff: 1s, 2s, 4s
+        
+        logger.warn(`Network error fetching exchange info (attempt ${nextRetry}/3), retrying in ${delay/1000}s: ${error.message}`);
+        
+        // Belirli bir gecikme sonra tekrar dene
+        await new Promise(resolve => setTimeout(resolve, delay));
+        return await this.fetchExchangeInfo(nextRetry);
+      }
+      
+      // Maksimum yeniden deneme sayısına ulaşıldı veya farklı bir hata
+      logger.error(`Error fetching exchange info${retryCount > 0 ? ` after ${retryCount} retries` : ''}: ${error.message}`);
       throw error;
     }
   }
@@ -401,9 +996,22 @@ class BinanceService {
 
   getQuantityPrecision(symbol) {
     if (!this.exchangeInfo || !this.exchangeInfo[symbol]) {
-      throw new Error(`Exchange info for ${symbol} not found.`);
+      logger.warn(`Exchange info for ${symbol} not found, using default precision 3`);
+      return 3; // Varsayılan değer
     }
-    return this.exchangeInfo[symbol].quantityPrecision;
+
+    // İzin verilen maksimum precision değeri
+    const maxPrecision = 8;
+
+    const precision = this.exchangeInfo[symbol].quantityPrecision;
+
+    // Precision değeri çok büyükse sınırla
+    if (precision > maxPrecision) {
+      logger.warn(`Precision value for ${symbol} too high (${precision}), limiting to ${maxPrecision}`);
+      return maxPrecision;
+    }
+
+    return precision;
   }
 
   async getStepSize(symbol) {
@@ -430,20 +1038,63 @@ class BinanceService {
 
   /**
   * Verilen sayıyı, belirtilen hassasiyete (decimal) göre string'e çevirir.
+  * Aynı isimli iki metot olduğu için bu fonksiyon kaldırıldı ve yukarıdaki metot kullanılmaktadır.
   */
-  adjustPrecision(value, stepSize) {
-    const precision = Math.floor(Math.log10(1 / stepSize));
-    const adjustedValue = Math.floor(value / stepSize) * stepSize; // Step size ile hizala
-    return parseFloat(adjustedValue.toFixed(precision));
+  /**
+   * Ağ hatalarına karşı dayanıklı API isteği yapar
+   * @param {Function} requestFunc - API isteğini yapacak async fonksiyon
+   * @param {string} operationName - İşlem adı (loglama için)
+   * @param {number} maxRetries - Maksimum yeniden deneme sayısı
+   * @param {number} retryCount - Mevcut deneme sayısı
+   * @returns {Promise<any>} - API yanıtı
+   */
+  async retryableRequest(requestFunc, operationName, maxRetries = 3, retryCount = 0) {
+    try {
+      // İsteği yap
+      return await requestFunc();
+    } catch (error) {
+      // Network veya timeout hatası için yeniden deneme
+      const isNetworkError = error.code === 'ECONNABORTED' || 
+                            error.message.includes('timeout') || 
+                            error.message.includes('socket') ||
+                            error.message.includes('network');
+      
+      if (isNetworkError && retryCount < maxRetries) {
+        const nextRetry = retryCount + 1;
+        const delay = 1000 * Math.pow(2, retryCount); // Exponential backoff: 1s, 2s, 4s, 8s
+        
+        logger.warn(`Network error during ${operationName} (attempt ${nextRetry}/${maxRetries}), retrying in ${delay/1000}s: ${error.message}`);
+        
+        // Belirli bir gecikme sonra tekrar dene
+        await new Promise(resolve => setTimeout(resolve, delay));
+        return await this.retryableRequest(requestFunc, operationName, maxRetries, nextRetry);
+      }
+      
+      // Maksimum yeniden deneme sayısına ulaşıldı veya farklı bir hata
+      const errorMsg = `Error during ${operationName}${retryCount > 0 ? ` after ${retryCount} retries` : ''}: ${error.message}`;
+      logger.error(errorMsg);
+      throw new Error(errorMsg);
+    }
   }
 
   /**
-   * Initialize fonksiyonu (eğer gerekiyorsa)
+   * Initialize fonksiyonu - API bağlantı sorunlarına karşı dayanıklı
    */
   async initialize() {
     try {
-      await this.fetchExchangeInfo();
+      // Exchange bilgilerini al - bağlantı hatalarına karşı yeniden deneme ile
+      await this.retryableRequest(
+        async () => await this.fetchExchangeInfo(),
+        'fetchExchangeInfo'
+      );
       logger.info('BinanceService initialized with exchange info.');
+      
+      // Pozisyon modunu kontrol et ve ayarla - bağlantı hatalarına karşı yeniden deneme ile
+      await this.retryableRequest(
+        async () => await this.checkAndSetPositionMode(),
+        'checkAndSetPositionMode'
+      );
+      logger.info(`BinanceService using position mode: ${this.positionSideMode}`);
     } catch (error) {
       logger.error('Error initializing BinanceService:', error.message);
       throw error;

@@ -9,6 +9,10 @@ class ThreeCommasBotStrategy {
     this.atrMultiplier = config.strategy.atrMultiplier || 1.5; // ATR çarpanı
   }
 
+  async initialize() {
+    console.log(`ThreeCommasBotStrategy Loaded `);
+}
+
   /**
    * Gösterge hesaplama fonksiyonu
    */

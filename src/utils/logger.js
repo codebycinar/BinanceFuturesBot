@@ -1,54 +1,68 @@
 // utils/logger.js
 const { createLogger, format, transports } = require('winston');
-const Transport = require('winston-transport');
 const path = require('path');
 const fs = require('fs');
 
-// 1. Önce şu paketi yükleyin:
-// npm install winston-transport
-
-// Dosya adı oluşturma fonksiyonu
-const getCurrentHourlyLogFileName = () => {
-  const now = new Date();
-  return `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}-${String(now.getHours()).padStart(2,'0')}00-bot.log`;
-};
-
-// Özel Transport sınıfı
-class HourlyFileTransport extends Transport {
-  log(info, callback) {
-    const filename = path.join(__dirname, '..', 'logs', getCurrentHourlyLogFileName());
-    
-    // Metadata kontrolü ekleyin
-    const metadata = info.metadata || {}; // Eğer metadata yoksa boş obje kullan
-    
-    let logEntry = `${info.level.toUpperCase()}: ${info.message}`;
-    if (Object.keys(metadata).length > 0) {
-      logEntry += ` ${JSON.stringify(metadata)}`;
-    }
-    logEntry += ` {"timestamp":"${info.timestamp}"}\n`;
-
-    fs.appendFileSync(filename, logEntry);
-    callback();
-  }
+// Log dizini oluştur (yoksa)
+const logDir = 'logs';
+if (!fs.existsSync(logDir)) {
+  fs.mkdirSync(logDir);
 }
 
+// Tarih formatını ayarla
+const getCurrentDate = () => {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+};
+
+// Log dosya adlarını oluştur
+const logFile = path.join(logDir, `${getCurrentDate()}-bot.log`);
+const errorLogFile = path.join(logDir, `${getCurrentDate()}-error.log`);
+const errorLogsFile = path.join(logDir, 'errorlogs.log'); // Kalıcı hata log dosyası
+
+// Ortak format ayarları
+const logFormat = format.combine(
+  format.timestamp(),
+  format.printf(({ timestamp, level, message, stack }) => {
+    if (stack) {
+      return `${level.toUpperCase()}: ${message}\n${stack} {"timestamp":"${timestamp}"}`;
+    }
+    return `${level.toUpperCase()}: ${message} {"timestamp":"${timestamp}"}`;
+  })
+);
+
 const logger = createLogger({
-  level: 'debug',
-  format: format.combine(
-    format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
-    format.printf(({ timestamp, level, message, ...metadata }) => {
-      let logMessage = `${level.toUpperCase()}: ${message}`;
-      if (Object.keys(metadata).length > 0) {
-        logMessage += ` ${JSON.stringify(metadata)}`;
-      }
-      logMessage += ` {"timestamp":"${timestamp}"}`;
-      return logMessage;
-    })
-  ),
+  level: 'info',
+  format: logFormat,
   transports: [
+    // Konsola tüm logları yazdır
     new transports.Console(),
-    new HourlyFileTransport()
-  ]
+    
+    // Tüm logları genel log dosyasına yazdır
+    new transports.File({ 
+      filename: logFile,
+      maxsize: 5242880, // 5MB
+      maxFiles: 30 
+    }),
+    
+    // Günlük hata logları (tarihli)
+    new transports.File({ 
+      filename: errorLogFile, 
+      level: 'error', 
+      maxsize: 5242880, // 5MB
+      maxFiles: 30 
+    }),
+    
+    // Kalıcı hata log dosyası (tüm hataları bir dosyada tutar)
+    new transports.File({
+      filename: errorLogsFile,
+      level: 'error',
+      maxsize: 10485760, // 10MB
+      maxFiles: 5
+    })
+  ],
+  // Hata durumunda çökmeyi önle
+  exitOnError: false
 });
 
 module.exports = logger;
