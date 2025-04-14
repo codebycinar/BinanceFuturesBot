@@ -27,6 +27,22 @@ module.exports = {
     leverage: 5,              // Kaldıraç oranı
   },
   
+  // RL (Reinforcement Learning) Bot yapılandırması
+  rlBot: {
+    timeframe: '15m',          // RL Bot zaman dilimi (15 dakika)
+    autoStart: false,          // Bot başlangıçta otomatik başlamasın
+    riskPerTrade: 2.0,         // RL Bot için işlem başına risk (%2)
+    maxPositions: 3,           // RL Bot için maksimum eşzamanlı pozisyon sayısı
+    learningRate: 0.3,         // Öğrenme oranı (alpha)
+    discountFactor: 0.7,       // Gelecekteki ödüllerin indirim faktörü (gamma)
+    explorationRate: 0.2,      // Keşif oranı (epsilon)
+    defaultStopLoss: 1.0,      // Varsayılan stop loss (%1)
+    defaultTakeProfit: 2.0,    // Varsayılan take profit (%2)
+    supportResistancePeriod: 20, // Destek/Direnç hesaplama periyodu
+    modelsDirectory: 'models'  // RL modellerinin kaydedileceği dizin
+  },
+  
+  
   // Turtle Trading stratejisi özellikleri
   turtleStrategy: {
     entryChannel: 20,     // 20 periyotluk kanal (giriş sinyali için)
@@ -65,17 +81,18 @@ module.exports = {
   marketScanInterval: 120000, // 2 dakika
   maxOpenPositions: 15, // Açık pozisyon limiti
   
-  // İzlenecek semboller - bunlar piyasada likiditesi yüksek olan sembollerdir
+  // RL Bot için izlenecek semboller (daha az sayıda sembolle çalışalım)
+  tradingPairs: [
+    'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'AVAXUSDT'
+  ],
+  
+  // Diğer stratejiler için izlenecek semboller
   topSymbols: [
     'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'AVAXUSDT',
     'DOGEUSDT', 'ADAUSDT', 'DOTUSDT', 'LINKUSDT', 'MATICUSDT',
     'XRPUSDT', 'NEARUSDT', 'ATOMUSDT', 'APTUSDT', 'TRXUSDT',
   ],
   
-  // Performans takibi
-  performanceTracking: {
-    enable: true,  // Performans takibini aç/kapa
-    saveToFile: true, // Sonuçları dosyaya kaydet
-    historyLimit: 100, // Kaç işlemi sakla
-  }
+  // RL Bot'u otomatik başlatma ayarı
+  autoStartRLBot: false
 };
