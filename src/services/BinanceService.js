@@ -26,7 +26,7 @@ class BinanceService {
     // Telegram Bot'u tanımla
     this.bot = new TelegramBot(config.telegramBotToken, { polling: false });
   }
-  
+
   /**
    * Check current position mode and set it if needed
    * NOT: Bu fonksiyon şu anda uygulanabilir değil, Binance API kütüphanesinde ilgili metotlar bulunmuyor
@@ -36,9 +36,9 @@ class BinanceService {
     try {
       // Uygun API metotları olmadığı için bu işlemi kaldırıyoruz
       // Position Side Mode'u web arayüzünden manuel olarak yapılandırın
-      
+
       logger.info(`Using position mode: ${this.positionSideMode}. Please ensure this matches your Binance account settings.`);
-      
+
       // Not: Güncel binance-api-node kütüphanesinde 
       // futuresPositionMode ve futuresChangePositionMode metotları bulunmuyor
     } catch (error) {
@@ -66,20 +66,43 @@ class BinanceService {
   }
 
   /**
-   * 1m mumlarını alma
+   * Mumları alma
+   * @param {string} symbol - İşlem sembolü (örn. BTCUSDT)
+   * @param {string} interval - Zaman dilimi (örn. 1m, 5m, 15m, 1h, 4h, 1d)
+   * @param {number} limit - Alınacak mum sayısı
+   * @param {number} startTime - Başlangıç zamanı (opsiyonel)
+   * @param {number} endTime - Bitiş zamanı (opsiyonel)
    */
-  async getCandles(symbol, interval = '1h', limit = 100) {
+  async getCandles(symbol, interval = '1h', limit = 100, startTime = null, endTime = null) {
     try {
-      const candles = await this.client.futuresCandles({ symbol, interval, limit });
-      return candles.map(c => ({
-        open: c.open,
-        high: c.high,
-        low: c.low,
-        close: c.close,
-        volume: c.volume,
+      // Fiyat verisini almak için parametreleri hazırla
+      const params = {
+        symbol,
+        interval,
+        limit
+      };
+
+      // Opsiyonel başlangıç ve bitiş zamanları
+      if (startTime) params.startTime = startTime;
+      if (endTime) params.endTime = endTime;
+
+      logger.info(`Fetching candles for ${symbol}, interval: ${interval}, limit: ${limit}`);
+
+      // Binance API'sinden mum verisini al
+      const candles = await this.client.futuresCandles(params);
+
+      // Veriyi dönüştür
+      const formattedCandles = candles.map(c => ({
+        open: parseFloat(c.open),
+        high: parseFloat(c.high),
+        low: parseFloat(c.low),
+        close: parseFloat(c.close),
+        volume: parseFloat(c.volume),
         timestamp: c.closeTime,
-      }))
-        .filter(c => !isNaN(c.close));
+      })).filter(c => !isNaN(c.close));
+
+      logger.info(`Received ${formattedCandles.length} candles for ${symbol}`);
+      return formattedCandles;
     } catch (error) {
       logger.error(`Error fetching candles for ${symbol}:`, error);
       return [];
@@ -134,6 +157,8 @@ class BinanceService {
       const quantityPrecision = this.getQuantityPrecision(symbol);
       const adjustedQuantity = parseFloat(quantity).toFixed(quantityPrecision);
       
+      logger.info(`Original quantity: ${quantity}, Adjusted quantity: ${adjustedQuantity}, Precision: ${quantityPrecision} for ${symbol}`);
+      
       const timestamp = Date.now();
       const params = new URLSearchParams({
         symbol,
@@ -173,6 +198,44 @@ class BinanceService {
   }
 
   /**
+   * GÜVENLI_MIKTAR: Miktarı belirli bir hassasiyete göre ayarlar
+   * Tamamen sıfırdan yazılmış, toFixed() kullanmayan güvenli bir fonksiyon
+   */
+  adjustPrecision(value, stepSize) {
+    try {
+      // Adım boyutunu kullanarak miktarı hizala
+      const adjustedValue = Math.floor(value / stepSize) * stepSize;
+
+      // Negatif değer kontrolü
+      if (adjustedValue <= 0) {
+        logger.warn(`Adjusted value (${adjustedValue}) is less than or equal to zero`);
+        return "0"; // Binance 0'dan büyük değer istiyor
+      }
+
+      // Hassasiyeti stepSize'ın ondalık basamaklarına göre hesapla
+      const stepSizeStr = stepSize.toString();
+      let precision = 0;
+
+      // Bilimsel gösterim kontrolü (örn: 1e-4)
+      if (stepSizeStr.includes('e-')) {
+        precision = parseInt(stepSizeStr.split('e-')[1]);
+      }
+      // Ondalık basamak sayısını bul
+      else if (stepSizeStr.includes('.')) {
+        precision = stepSizeStr.split('.')[1].length;
+      }
+
+      // toFixed için hassasiyeti güvenli aralıkta tut
+      const safePrecision = Math.min(Math.max(precision, 0), 8);
+
+      return parseFloat(adjustedValue.toFixed(safePrecision)).toString();
+    } catch (error) {
+      logger.error(`Error in adjustPrecision: ${error}`);
+      return "0";
+    }
+  }
+
+  /**
    * Limit emri ile pozisyon açar (örn. LONG -> BUY, SHORT -> SELL).
    */
   /**
@@ -188,7 +251,7 @@ class BinanceService {
       const stepSize = parseFloat(this.exchangeInfo[symbol].filters.LOT_SIZE.stepSize);
       const tickSize = parseFloat(this.exchangeInfo[symbol].filters.PRICE_FILTER.tickSize);
 
-      const adjustedQuantity = parseFloat(quantity).toFixed(quantityPrecision);
+      const adjustedQuantity = parseFloat(this.adjustPrecision(quantity, quantityPrecision));
       const adjustedPrice = parseFloat(limitPrice).toFixed(pricePrecision);
 
       if (adjustedQuantity <= 0 || adjustedQuantity % stepSize !== 0) {
@@ -226,40 +289,18 @@ class BinanceService {
       if (!this.exchangeInfo) {
         await this.getExchangeInfo();
       }
-      
+
       // Get price and quantity precision for the symbol
       const pricePrecision = this.getPricePrecision(symbol);
       const quantityPrecision = this.getQuantityPrecision(symbol);
-      
-      // Adjust price according to tick size
-      const tickSize = parseFloat(this.exchangeInfo[symbol].filters.PRICE_FILTER.tickSize);
-      const stepSize = parseFloat(this.exchangeInfo[symbol].filters.LOT_SIZE.stepSize);
-      
-      // Properly round price to valid tick size increments
-      const rawStopPrice = parseFloat(stopPrice);
-      // Get the correct number of decimal places from the tick size
-      const tickSizeDecimals = tickSize.toString().includes('.') ? 
-          tickSize.toString().split('.')[1].length : 0;
-          
-      // Round the price to match the tick size (using Math.round instead of Math.floor)
-      const roundedPrice = Math.round(rawStopPrice / tickSize) * tickSize;
-      // Convert to fixed precision string
-      const adjustedStopPrice = roundedPrice.toFixed(tickSizeDecimals);
-      
-      // Properly round quantity to valid step size increments
-      const rawQuantity = parseFloat(quantity);
-      // Get the correct number of decimal places from the step size
-      const stepSizeDecimals = stepSize.toString().includes('.') ? 
-          stepSize.toString().split('.')[1].length : 0;
-          
-      // Round the quantity to match the step size (using Math.round instead of Math.floor)
-      const roundedQuantity = Math.round(rawQuantity / stepSize) * stepSize;
-      // Convert to fixed precision string
-      const adjustedQuantity = roundedQuantity.toFixed(stepSizeDecimals);
-      
-      logger.info(`Price precision for ${symbol}: ${pricePrecision}, Quantity precision: ${quantityPrecision}`);
-      logger.info(`Raw price: ${rawStopPrice} -> Adjusted: ${adjustedStopPrice}, Raw quantity: ${rawQuantity} -> Adjusted: ${adjustedQuantity}`);
-      
+
+      // Adjust price and quantity using our helper methods
+      const adjustedStopPrice = this.adjustPrecision(stopPrice, pricePrecision);
+      const adjustedQuantity = this.adjustPrecision(quantity, quantityPrecision);
+
+      logger.info(`Stop Loss - Original quantity: ${quantity}, Adjusted: ${adjustedQuantity}, Precision: ${quantityPrecision}`);
+      logger.info(`Stop Loss - Original price: ${stopPrice}, Adjusted: ${adjustedStopPrice}, Precision: ${pricePrecision}`);
+
       const orderData = {
         symbol,
         side,
@@ -268,6 +309,7 @@ class BinanceService {
         quantity: adjustedQuantity,
         positionSide
       };
+
       logger.info(`Placing Stop Loss order for ${symbol}:`, orderData);
       return await this.client.futuresOrder(orderData);
     } catch (error) {
@@ -283,40 +325,18 @@ class BinanceService {
       if (!this.exchangeInfo) {
         await this.getExchangeInfo();
       }
-      
+
       // Get price and quantity precision for the symbol
       const pricePrecision = this.getPricePrecision(symbol);
       const quantityPrecision = this.getQuantityPrecision(symbol);
-      
-      // Adjust price according to tick size
-      const tickSize = parseFloat(this.exchangeInfo[symbol].filters.PRICE_FILTER.tickSize);
-      const stepSize = parseFloat(this.exchangeInfo[symbol].filters.LOT_SIZE.stepSize);
-      
-      // Properly round price to valid tick size increments
-      const rawStopPrice = parseFloat(stopPrice);
-      // Get the correct number of decimal places from the tick size
-      const tickSizeDecimals = tickSize.toString().includes('.') ? 
-          tickSize.toString().split('.')[1].length : 0;
-          
-      // Round the price to match the tick size (using Math.round instead of Math.floor)
-      const roundedPrice = Math.round(rawStopPrice / tickSize) * tickSize;
-      // Convert to fixed precision string
-      const adjustedStopPrice = roundedPrice.toFixed(tickSizeDecimals);
-      
-      // Properly round quantity to valid step size increments
-      const rawQuantity = parseFloat(quantity);
-      // Get the correct number of decimal places from the step size
-      const stepSizeDecimals = stepSize.toString().includes('.') ? 
-          stepSize.toString().split('.')[1].length : 0;
-          
-      // Round the quantity to match the step size (using Math.round instead of Math.floor)
-      const roundedQuantity = Math.round(rawQuantity / stepSize) * stepSize;
-      // Convert to fixed precision string
-      const adjustedQuantity = roundedQuantity.toFixed(stepSizeDecimals);
-      
-      logger.info(`Price precision for ${symbol}: ${pricePrecision}, Quantity precision: ${quantityPrecision}`);
-      logger.info(`Raw price: ${rawStopPrice} -> Adjusted: ${adjustedStopPrice}, Raw quantity: ${rawQuantity} -> Adjusted: ${adjustedQuantity}`);
-      
+
+      // Adjust price and quantity using our helper methods
+      const adjustedStopPrice = this.adjustPrecision(stopPrice, pricePrecision);
+      const adjustedQuantity = this.adjustPrecision(quantity, quantityPrecision);
+
+      logger.info(`Take Profit - Original quantity: ${quantity}, Adjusted: ${adjustedQuantity}, Precision: ${quantityPrecision}`);
+      logger.info(`Take Profit - Original price: ${stopPrice}, Adjusted: ${adjustedStopPrice}, Precision: ${pricePrecision}`);
+
       const orderData = {
         symbol,
         side,
@@ -325,6 +345,7 @@ class BinanceService {
         quantity: adjustedQuantity,
         positionSide
       };
+
       logger.info(`Placing Take Profit order for ${symbol}:`, orderData);
       return await this.client.futuresOrder(orderData);
     } catch (error) {
@@ -422,7 +443,7 @@ class BinanceService {
           - Profit/Loss: ${profitLossUSDT} USDT
           - Order ID: ${order.orderId || 'N/A'}
       `;
-      
+
       // Sadece loglama yap, mesajı positionManager'dan gönderelim
       logger.info(successMessage);
 
@@ -607,7 +628,7 @@ class BinanceService {
       // Strateji varsa onun tercih ettiği zaman dilimini kullan
       // yoksa config'den veya varsayılan olarak 1h'ı kullan
       let timeframe = '1h';
-      
+
       if (strategy && strategy.preferredTimeframe) {
         timeframe = strategy.preferredTimeframe;
       } else if (this.parameters && this.parameters.timeframe) {
@@ -726,9 +747,22 @@ class BinanceService {
 
   getQuantityPrecision(symbol) {
     if (!this.exchangeInfo || !this.exchangeInfo[symbol]) {
-      throw new Error(`Exchange info for ${symbol} not found.`);
+      logger.warn(`Exchange info for ${symbol} not found, using default precision 3`);
+      return 3; // Varsayılan değer
     }
-    return this.exchangeInfo[symbol].quantityPrecision;
+
+    // İzin verilen maksimum precision değeri
+    const maxPrecision = 8;
+
+    const precision = this.exchangeInfo[symbol].quantityPrecision;
+
+    // Precision değeri çok büyükse sınırla
+    if (precision > maxPrecision) {
+      logger.warn(`Precision value for ${symbol} too high (${precision}), limiting to ${maxPrecision}`);
+      return maxPrecision;
+    }
+
+    return precision;
   }
 
   async getStepSize(symbol) {
@@ -755,13 +789,8 @@ class BinanceService {
 
   /**
   * Verilen sayıyı, belirtilen hassasiyete (decimal) göre string'e çevirir.
+  * Aynı isimli iki metot olduğu için bu fonksiyon kaldırıldı ve yukarıdaki metot kullanılmaktadır.
   */
-  adjustPrecision(value, stepSize) {
-    const precision = Math.floor(Math.log10(1 / stepSize));
-    const adjustedValue = Math.floor(value / stepSize) * stepSize; // Step size ile hizala
-    return parseFloat(adjustedValue.toFixed(precision));
-  }
-
   /**
    * Initialize fonksiyonu (eğer gerekiyorsa)
    */
