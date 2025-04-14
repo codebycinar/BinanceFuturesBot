@@ -32,7 +32,8 @@ const config = require('../config/config');
 class OnchainMetricsService {
   constructor() {
     // API tabanları
-    this.coincapBaseUrl = 'https://api.coincap.io/v2';
+    this.coincapApiKey = 'b8d054986a573ef5ac4fd82ef792eec7dc773ab10efd063c3e024fdfddb3a19b';
+    this.coincapBaseUrl = 'https://api.coincap.io/v3'; // v3 API
     this.binanceBaseUrl = 'https://api.binance.com/api/v3';
     
     // Önbellek sistemi
@@ -191,15 +192,13 @@ class OnchainMetricsService {
         return this.cache[cacheKey];
       }
       
-      // CoinCap ID'sini bul
-      const coincapId = this.coincapIdMap[asset] || asset.toLowerCase();
+      // CoinCap ID'sini bul (slug formatına çevir)
+      const coincapSlug = this.coincapIdMap[asset] || asset.toLowerCase();
       
-      // CoinCap'den veri al (API key ile)
-      const coincapUrl = `${this.coincapBaseUrl}/assets/${coincapId}`;
+      // CoinCap v3 API'den veri al (API key ile)
+      const coincapUrl = `${this.coincapBaseUrl}/assets/${coincapSlug}`;
       
-      const coinResponse = await this.throttledRequest('coincap', async (params) => {
-        return await axios.get(coincapUrl, { params });
-      });
+      const coinResponse = await this.throttledRequest('coincap', coincapUrl);
       
       // Binance'den büyük işlem verileri (son 24 saat)
       const symbol = asset + 'USDT';
@@ -214,8 +213,16 @@ class OnchainMetricsService {
       });
       
       // Toplam işlem hacmi ve piyasa değeri
-      const totalVolume = parseFloat(coinResponse.data.data?.volumeUsd24Hr || 0);
-      const marketCap = parseFloat(coinResponse.data.data?.marketCapUsd || 0);
+      // CoinCap API v3 formatı için parse işlemi
+      let totalVolume = 0, marketCap = 0;
+      
+      try {
+        const data = coinResponse.data.data || coinResponse.data;
+        totalVolume = parseFloat(data.volumeUsd24Hr || data.volume_usd_24hr || 0);
+        marketCap = parseFloat(data.marketCapUsd || data.market_cap_usd || 0);
+      } catch (error) {
+        logger.error(`Error parsing CoinCap API v3 data: ${error.message}`);
+      }
       
       // Ortalama işlem boyutu
       const aggTrades = tradesResponse.data;
@@ -269,23 +276,35 @@ class OnchainMetricsService {
         return this.cache[cacheKey];
       }
       
-      // CoinCap ID'sini bul
-      const coincapId = this.coincapIdMap[asset] || asset.toLowerCase();
+      // CoinCap ID'sini bul (slug formatına çevir)
+      const coincapSlug = this.coincapIdMap[asset] || asset.toLowerCase();
       
-      // CoinCap'den veri al (API key ile)
-      const coincapUrl = `${this.coincapBaseUrl}/assets/${coincapId}`;
+      // CoinCap v3 API'den veri al (API key ile)
+      const coincapUrl = `${this.coincapBaseUrl}/assets/${coincapSlug}`;
       
-      const coinResponse = await this.throttledRequest('coincap', async (params) => {
-        return await axios.get(coincapUrl, { params });
-      });
+      const coinResponse = await this.throttledRequest('coincap', coincapUrl);
       
-      // CoinCap API'den gelen veri formatını işle
-      const marketCap = parseFloat(coinResponse.data.data?.marketCapUsd || 0);
-      const totalVolume = parseFloat(coinResponse.data.data?.volumeUsd24Hr || 0);
-      const currentPrice = parseFloat(coinResponse.data.data?.priceUsd || 0);
+      // CoinCap API v3'den gelen veri formatını işle
+      // Not: CoinCap API v3 formatında değişiklikler olabilir, hata alırsak logla ve düzelt
+      let marketCap = 0, totalVolume = 0, currentPrice = 0, priceChange24h = 0;
       
-      // CoinCap API'den yüzde değişim verisi
-      const priceChange24h = parseFloat(coinResponse.data.data?.changePercent24Hr || 0);
+      try {
+        // Data formatını logla ve anla
+        logger.debug(`CoinCap API v3 response format: ${JSON.stringify(coinResponse.data).substring(0, 200)}...`);
+        
+        // v3 API'de format değişmiş olabilir, dikkatli parse et
+        const data = coinResponse.data.data || coinResponse.data;
+        
+        marketCap = parseFloat(data.marketCapUsd || data.market_cap_usd || 0);
+        totalVolume = parseFloat(data.volumeUsd24Hr || data.volume_usd_24hr || 0);
+        currentPrice = parseFloat(data.priceUsd || data.price_usd || 0);
+        
+        // CoinCap API'den yüzde değişim verisi
+        priceChange24h = parseFloat(data.changePercent24Hr || data.change_percent_24hr || 0);
+      } catch (error) {
+        logger.error(`Error parsing CoinCap API v3 data: ${error.message}`);
+        // Hata durumunda varsayılan değerler kullan
+      }
       
       // Diğer bilgiler CoinCap'te yoksa, sınırlı veriden tahmin yürüt
       const priceChange7d = priceChange24h * 0.7; // 24 saatlik değişimin %70'i
@@ -377,15 +396,13 @@ class OnchainMetricsService {
         return this.cache[cacheKey];
       }
       
-      // CoinCap ID'sini bul
-      const coincapId = this.coincapIdMap[asset] || asset.toLowerCase();
+      // CoinCap ID'sini bul (slug formatına çevir)
+      const coincapSlug = this.coincapIdMap[asset] || asset.toLowerCase();
       
-      // CoinCap'den veri al (API key ile)
-      const coincapUrl = `${this.coincapBaseUrl}/assets/${coincapId}`;
+      // CoinCap v3 API'den veri al (API key ile)
+      const coincapUrl = `${this.coincapBaseUrl}/assets/${coincapSlug}`;
       
-      const coinResponse = await this.throttledRequest('coincap', async (params) => {
-        return await axios.get(coincapUrl, { params });
-      });
+      const coinResponse = await this.throttledRequest('coincap', coincapUrl);
       
       // Binance'den 24 saatlik istatistikler
       const symbol = asset + 'USDT';
@@ -399,7 +416,15 @@ class OnchainMetricsService {
       });
       
       // Ağ değeri (market cap) ve işlem hacmi
-      const marketCap = parseFloat(coinResponse.data.data?.marketCapUsd || 0);
+      // CoinCap API v3 formatına uygun veri çıkarma
+      let marketCap = 0;
+      
+      try {
+        const data = coinResponse.data.data || coinResponse.data;
+        marketCap = parseFloat(data.marketCapUsd || data.market_cap_usd || 0);
+      } catch (error) {
+        logger.error(`Error parsing CoinCap API v3 data for NVT: ${error.message}`);
+      }
       const tradingVolume = parseFloat(tickerResponse.data.quoteVolume) || 0;
       
       // NVT benzeri oran hesapla
@@ -618,6 +643,26 @@ class OnchainMetricsService {
       
       // İstek zamanını güncelle
       this.lastRequestTime[apiName] = Date.now();
+      
+      // CoinCap API için Authorization header ekle
+      if (apiName === 'coincap') {
+        const originalRequestFunc = requestFunc;
+        requestFunc = async () => {
+          try {
+            return await axios.get(
+              // URL'yi doğrudan aldığımız parametre olarak kullan
+              arguments[0], 
+              {
+                headers: {
+                  'Authorization': `Bearer ${this.coincapApiKey}`
+                }
+              }
+            );
+          } catch (error) {
+            throw error;
+          }
+        };
+      }
       
       // İsteği yap
       return await requestFunc();

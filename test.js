@@ -9,7 +9,7 @@ const OnchainMetricsService = require('./src/services/OnchainMetricsService');
 const logger = require('./src/utils/logger');
 
 async function testOnchainMetrics() {
-  logger.info('Starting OnchainMetrics test with CoinCap API key...');
+  logger.info('Starting OnchainMetrics test with CoinCap API v3 and authentication...');
   
   const metrics = new OnchainMetricsService();
   
