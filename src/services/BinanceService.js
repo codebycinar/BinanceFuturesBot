@@ -159,15 +159,27 @@ class BinanceService {
       
       logger.info(`Original quantity: ${quantity}, Adjusted quantity: ${adjustedQuantity}, Precision: ${quantityPrecision} for ${symbol}`);
       
+      // Check the position mode (Hedge Mode or One-Way Mode)
+      const isHedgeMode = config.positionSideMode === 'Hedge';
+      logger.info(`Position Mode: ${config.positionSideMode}, Is Hedge Mode: ${isHedgeMode}`);
+      
+      // Prepare parameters
       const timestamp = Date.now();
       const params = new URLSearchParams({
         symbol,
         side,
         type: 'MARKET',
         quantity: adjustedQuantity,
-        positionSide,
         timestamp
       });
+      
+      // Add positionSide parameter only if in Hedge Mode
+      if (isHedgeMode && positionSide) {
+        params.append('positionSide', positionSide);
+        logger.info(`Adding positionSide=${positionSide} parameter for Hedge Mode`);
+      } else {
+        logger.info(`Omitting positionSide parameter for One-Way Mode`);
+      }
       
       // Binance API'si için HMAC-SHA256 imzası oluştur
       const signature = require('crypto')
@@ -178,8 +190,27 @@ class BinanceService {
       params.append('signature', signature);
       
       const url = 'https://fapi.binance.com/fapi/v1/order';
-      logger.info(`Sending direct MARKET order to Binance API:`, params.toString());
+      logger.info(`Sending direct MARKET order to Binance API: ${params.toString()}`);
       
+      // First, try to do a test order to validate parameters
+      try {
+        const testUrl = 'https://fapi.binance.com/fapi/v1/order/test';
+        await axios({
+          method: 'POST',
+          url: testUrl,
+          headers: { 'X-MBX-APIKEY': config.apiKey },
+          data: params.toString()
+        });
+        logger.info(`Test order successful for ${symbol}`);
+      } catch (testError) {
+        logger.error(`Test order failed for ${symbol}: ${testError.message}`);
+        if (testError.response) {
+          logger.error(`Test API response: ${JSON.stringify(testError.response.data)}`);
+        }
+        throw testError;
+      }
+      
+      // Now place the real order
       const response = await axios({
         method: 'POST',
         url: url,
@@ -261,15 +292,27 @@ class BinanceService {
         throw new Error(`Invalid price after adjustment: ${adjustedPrice}`);
       }
 
+      // Check the position mode (Hedge Mode or One-Way Mode)
+      const isHedgeMode = config.positionSideMode === 'Hedge';
+      logger.info(`Position Mode for Limit Order: ${config.positionSideMode}, Is Hedge Mode: ${isHedgeMode}`);
+
+      // Prepare order data based on position mode
       const orderData = {
         symbol,
         side,
         type: 'LIMIT',
         price: adjustedPrice,
         quantity: adjustedQuantity,
-        timeInForce: 'GTC',
-        positionSide,
+        timeInForce: 'GTC'
       };
+      
+      // Add positionSide only if in Hedge Mode
+      if (isHedgeMode && positionSide) {
+        orderData.positionSide = positionSide;
+        logger.info(`Adding positionSide=${positionSide} for Limit Order in Hedge Mode`);
+      } else {
+        logger.info(`Omitting positionSide for Limit Order in One-Way Mode`);
+      }
 
       logger.info('Placing LIMIT order:', orderData);
       return await this.client.futuresOrder(orderData);
@@ -301,14 +344,26 @@ class BinanceService {
       logger.info(`Stop Loss - Original quantity: ${quantity}, Adjusted: ${adjustedQuantity}, Precision: ${quantityPrecision}`);
       logger.info(`Stop Loss - Original price: ${stopPrice}, Adjusted: ${adjustedStopPrice}, Precision: ${pricePrecision}`);
 
+      // Check the position mode (Hedge Mode or One-Way Mode)
+      const isHedgeMode = config.positionSideMode === 'Hedge';
+      logger.info(`Position Mode for Stop Loss: ${config.positionSideMode}, Is Hedge Mode: ${isHedgeMode}`);
+
+      // Prepare order data based on position mode
       const orderData = {
         symbol,
         side,
         type: 'STOP_MARKET',
         stopPrice: adjustedStopPrice,
-        quantity: adjustedQuantity,
-        positionSide
+        quantity: adjustedQuantity
       };
+
+      // Add positionSide only if in Hedge Mode
+      if (isHedgeMode && positionSide) {
+        orderData.positionSide = positionSide;
+        logger.info(`Adding positionSide=${positionSide} for Stop Loss in Hedge Mode`);
+      } else {
+        logger.info(`Omitting positionSide for Stop Loss in One-Way Mode`);
+      }
 
       logger.info(`Placing Stop Loss order for ${symbol}:`, orderData);
       return await this.client.futuresOrder(orderData);
@@ -337,14 +392,26 @@ class BinanceService {
       logger.info(`Take Profit - Original quantity: ${quantity}, Adjusted: ${adjustedQuantity}, Precision: ${quantityPrecision}`);
       logger.info(`Take Profit - Original price: ${stopPrice}, Adjusted: ${adjustedStopPrice}, Precision: ${pricePrecision}`);
 
+      // Check the position mode (Hedge Mode or One-Way Mode)
+      const isHedgeMode = config.positionSideMode === 'Hedge';
+      logger.info(`Position Mode for Take Profit: ${config.positionSideMode}, Is Hedge Mode: ${isHedgeMode}`);
+
+      // Prepare order data based on position mode
       const orderData = {
         symbol,
         side,
         type: 'TAKE_PROFIT_MARKET',
         stopPrice: adjustedStopPrice,
-        quantity: adjustedQuantity,
-        positionSide
+        quantity: adjustedQuantity
       };
+
+      // Add positionSide only if in Hedge Mode
+      if (isHedgeMode && positionSide) {
+        orderData.positionSide = positionSide;
+        logger.info(`Adding positionSide=${positionSide} for Take Profit in Hedge Mode`);
+      } else {
+        logger.info(`Omitting positionSide for Take Profit in One-Way Mode`);
+      }
 
       logger.info(`Placing Take Profit order for ${symbol}:`, orderData);
       return await this.client.futuresOrder(orderData);
@@ -365,14 +432,26 @@ class BinanceService {
       // 2) Miktarı bu precision’a göre ayarlayalım
       const adjustedQuantity = parseFloat(quantity).toFixed(quantityPrecision);
 
+      // Check the position mode (Hedge Mode or One-Way Mode)
+      const isHedgeMode = config.positionSideMode === 'Hedge';
+      logger.info(`Position Mode for Trailing Stop: ${config.positionSideMode}, Is Hedge Mode: ${isHedgeMode}`);
+
+      // Prepare order data based on position mode
       const orderData = {
         symbol,
         side,
         type: 'TRAILING_STOP_MARKET',
         quantity: adjustedQuantity,
-        callbackRate: callbackRate.toString(),
-        positionSide: positionSide
+        callbackRate: callbackRate.toString()
       };
+      
+      // Add positionSide only if in Hedge Mode
+      if (isHedgeMode && positionSide) {
+        orderData.positionSide = positionSide;
+        logger.info(`Adding positionSide=${positionSide} for Trailing Stop in Hedge Mode`);
+      } else {
+        logger.info(`Omitting positionSide for Trailing Stop in One-Way Mode`);
+      }
 
       logger.info(`Placing TRAILING_STOP_MARKET order:`, orderData);
       return await this.client.futuresOrder(orderData);
@@ -424,13 +503,29 @@ class BinanceService {
       const profitLoss = (currentPrice - entryPrice) * positionSize * (side === 'SELL' ? 1 : -1); // Long için ters işlem
       const profitLossUSDT = profitLoss.toFixed(2); // USDT cinsinden yuvarlama
 
-      // Satış işlemini gerçekleştir
-      const order = await this.client.futuresOrder({
+      // Check the position mode (Hedge Mode or One-Way Mode)
+      const isHedgeMode = config.positionSideMode === 'Hedge';
+      logger.info(`Position Mode for Close Position: ${config.positionSideMode}, Is Hedge Mode: ${isHedgeMode}`);
+
+      // Prepare order data based on position mode
+      const orderData = {
         symbol,
         side,
         type: 'MARKET',
         quantity: adjustedQuantity
-      });
+      };
+      
+      // Add positionSide only if in Hedge Mode
+      if (isHedgeMode && position.positionSide) {
+        orderData.positionSide = position.positionSide;
+        logger.info(`Adding positionSide=${position.positionSide} for Close Position in Hedge Mode`);
+      } else {
+        logger.info(`Omitting positionSide for Close Position in One-Way Mode`);
+      }
+      
+      // Satış işlemini gerçekleştir
+      logger.info(`Closing position with order:`, orderData);
+      const order = await this.client.futuresOrder(orderData);
 
       // Başarılı işlem detaylarını logla
       const successMessage = `
