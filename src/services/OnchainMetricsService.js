@@ -33,7 +33,7 @@ class OnchainMetricsService {
   constructor() {
     // API tabanları
     this.coincapApiKey = 'b8d054986a573ef5ac4fd82ef792eec7dc773ab10efd063c3e024fdfddb3a19b';
-    this.coincapBaseUrl = 'https://api.coincap.io/v2'; // v2 API'ye geri dön, v3 henüz hazır olmayabilir
+    this.coincapBaseUrl = 'https://rest.coincap.io/v3'; // Dokümandaki URL yapısı: rest.coincap.io/v3
     this.binanceBaseUrl = 'https://api.binance.com/api/v3';
     
     // Önbellek sistemi
@@ -644,7 +644,7 @@ class OnchainMetricsService {
       // İstek zamanını güncelle
       this.lastRequestTime[apiName] = Date.now();
       
-      // CoinCap API için authorization ekle (v2 API için)
+      // CoinCap API için authorization ekle (dokümana göre)
       if (apiName === 'coincap') {
         const url = arguments[0]; // URL'yi ilk parametre olarak al
         
@@ -653,19 +653,15 @@ class OnchainMetricsService {
           try {
             logger.debug(`Making CoinCap API request to: ${url}`);
             
-            // CoinCap v2 API için farklı yöntemleri deneyelim
-            // 1. API key'i URL parametresi olarak ekle
+            // Dokümanda belirtildiği gibi URL'e apiKey parametresi ekle
+            // Örnek URL: rest.coincap.io/v3/assets?apiKey=YourApiKey
             const requestUrl = new URL(url);
             requestUrl.searchParams.append('apiKey', this.coincapApiKey);
             
-            // 2. Authorization header ile dene
-            const headers = {
-              'Authorization': `Bearer ${this.coincapApiKey}`,
-              'API-Key': this.coincapApiKey
-            };
+            logger.debug(`Final CoinCap API URL: ${requestUrl.toString()}`);
             
-            // İsteği yap
-            return await axios.get(requestUrl.toString(), { headers });
+            // İsteği yap (sadece URL parametresi olarak API key kullan)
+            return await axios.get(requestUrl.toString());
           } catch (error) {
             logger.error(`CoinCap API request error: ${error.message}`);
             throw error;
