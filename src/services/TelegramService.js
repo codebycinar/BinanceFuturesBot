@@ -352,35 +352,10 @@ Available commands:
         
         // For simpler Markdown parsing that won't excessively escape
         // Just lightly escape the basic formatting characters
+        
+        // Note: We previously had a complex implementation here that was causing excessive escaping
+        // It's been replaced with this simple approach that just escapes the basic formatting characters
         return String(message).replace(/([_*`])/g, '\\$1');
-        
-        /* Old complex implementation was causing issues with excessive escaping
-        // Handle bold text: ensure proper escaping of content between asterisks
-        const boldRegex = /\*(.*?)\*/g;
-        const parts = [];
-        let lastIndex = 0;
-        let match;
-        
-        while ((match = boldRegex.exec(message)) !== null) {
-            // Add text before the match (escaped)
-            if (match.index > lastIndex) {
-                parts.push(this.escapeMarkdown(message.substring(lastIndex, match.index)));
-            }
-            
-            // Add the bold text (without escaping the asterisks, but escape content inside)
-            const content = match[1];
-            parts.push(`*${this.escapeMarkdown(content)}*`);
-            
-            lastIndex = match.index + match[0].length;
-        }
-        
-        // Add any remaining text
-        if (lastIndex < message.length) {
-            parts.push(this.escapeMarkdown(message.substring(lastIndex)));
-        }
-        
-        return parts.join('');
-        */
     }
 
     async sendFormattedMessage(title, content, options = {}) {
