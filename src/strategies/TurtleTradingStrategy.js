@@ -125,11 +125,34 @@ class TurtleTradingStrategy {
                 return { signal: 'NEUTRAL' };
             }
             
+            // Cache mechanims for repeated calculations
+            if (!this.calculationCache) {
+                this.calculationCache = {};
+                this.cacheExpiry = {};
+            }
+            
             // Adaptif kırılma seviyesi - piyasa koşullarına göre ayarla
             let entryPeriod = this.parameters.entryChannel;
             if (this.parameters.adaptiveBreakout) {
-                // Volatiliteye göre kırılma periyodunu ayarla
-                const atr = this.calculateATR(candles, this.parameters.atrPeriod);
+                // Create a cache key to avoid repeated ATR calculations
+                const cacheKey = `${symbol}_atr_${this.parameters.atrPeriod}_${candles[candles.length-1].timestamp}`;
+                const now = Date.now();
+                const cacheLifetime = 30 * 1000; // 30 second cache
+                
+                let atr;
+                if (this.calculationCache[cacheKey] && this.cacheExpiry[cacheKey] > now) {
+                    // Use cached ATR value
+                    atr = this.calculationCache[cacheKey];
+                } else {
+                    // Calculate ATR and cache it
+                    atr = this.calculateATR(candles, this.parameters.atrPeriod);
+                    this.calculationCache[cacheKey] = atr;
+                    this.cacheExpiry[cacheKey] = now + cacheLifetime;
+                    
+                    // Clean cache occasionally
+                    this.cleanCalculationCache();
+                }
+                
                 const currentPrice = parseFloat(candles[candles.length - 1].close);
                 const volatilityPercent = (atr / currentPrice) * 100;
                 
@@ -147,8 +170,22 @@ class TurtleTradingStrategy {
             const entryDonchian = this.calculateDonchianChannel(candles, Math.round(entryPeriod));
             const exitDonchian = this.calculateDonchianChannel(candles, this.parameters.exitChannel);
             
-            // ATR hesapla
-            const atr = this.calculateATR(candles, this.parameters.atrPeriod);
+            // ATR hesapla - use cache if available
+            let atr;
+            const atrCacheKey = `${symbol}_atr_${this.parameters.atrPeriod}_${candles[candles.length-1].timestamp}`;
+            const now = Date.now();
+            
+            if (this.calculationCache && this.calculationCache[atrCacheKey] && this.cacheExpiry[atrCacheKey] > now) {
+                // Use cached ATR value
+                atr = this.calculationCache[atrCacheKey];
+            } else {
+                // Calculate ATR and cache it
+                atr = this.calculateATR(candles, this.parameters.atrPeriod);
+                if (this.calculationCache) {
+                    this.calculationCache[atrCacheKey] = atr;
+                    this.cacheExpiry[atrCacheKey] = now + (30 * 1000); // 30 second cache
+                }
+            }
             
             // Trend analizi için basit bir hareketli ortalama
             const sma50 = this.calculateSMA(candles, 50);
@@ -792,6 +829,49 @@ class TurtleTradingStrategy {
         } catch (error) {
             logger.error('Error calculating Donchian Channel:', error);
             return { upper: 0, lower: 0, middle: 0 };
+        }
+    }
+    
+    /**
+     * Clean calculation cache to prevent memory leaks
+     */
+    cleanCalculationCache() {
+        try {
+            if (!this.calculationCache || !this.cacheExpiry) {
+                return;
+            }
+            
+            const now = Date.now();
+            let expiredCount = 0;
+            
+            Object.keys(this.cacheExpiry).forEach(key => {
+                if (this.cacheExpiry[key] < now) {
+                    delete this.calculationCache[key];
+                    delete this.cacheExpiry[key];
+                    expiredCount++;
+                }
+            });
+            
+            // If we have too many cache entries, trim the cache
+            const maxCacheSize = 1000;
+            if (Object.keys(this.calculationCache).length > maxCacheSize) {
+                // Get oldest entries based on expiry time
+                const oldestEntries = Object.keys(this.cacheExpiry)
+                    .sort((a, b) => this.cacheExpiry[a] - this.cacheExpiry[b])
+                    .slice(0, 100); // Remove oldest 100 entries
+                    
+                oldestEntries.forEach(key => {
+                    delete this.calculationCache[key];
+                    delete this.cacheExpiry[key];
+                    expiredCount++;
+                });
+            }
+            
+            if (expiredCount > 0) {
+                logger.debug(`Cleaned ${expiredCount} TurtleStrategy cache entries`);
+            }
+        } catch (error) {
+            logger.error(`Error cleaning calculation cache: ${error.message}`);
         }
     }
     
