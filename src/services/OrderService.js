@@ -384,20 +384,55 @@ class OrderService {
     try {
       const currentPrice = await this.binanceService.getCurrentPrice(symbol);
 
-      const stepSize = await this.binanceService.getStepSize(symbol);
-      const adjustedQuantity = parseFloat(quantity).toFixed(stepSize);
+      // Eğer quantity null, undefined, 0 veya NaN ise, pozisyon miktarını Binance'dan al
+      let actualQuantity = quantity;
+      
+      if (!quantity || isNaN(quantity) || quantity === 0) {
+        logger.info(`No quantity provided for ${symbol}, fetching position size from Binance`);
+        
+        // Pozisyon miktarını Binance'dan al
+        const positions = await this.binanceService.getOpenPositions();
+        const position = positions.find(p => p.symbol === symbol);
+        
+        if (!position || Math.abs(parseFloat(position.positionAmt)) === 0) {
+          logger.warn(`No open position found on Binance for ${symbol}`);
+          return false;
+        }
+        
+        // Pozisyon miktarının mutlak değerini al (positionAmt negative for SHORT positions)
+        actualQuantity = Math.abs(parseFloat(position.positionAmt));
+        logger.info(`Found position size from Binance for ${symbol}: ${actualQuantity}`);
+      }
+      
+      // Eğer hala geçersiz miktar varsa, işlemi durdur
+      if (!actualQuantity || isNaN(actualQuantity) || actualQuantity === 0) {
+        logger.error(`Invalid quantity for ${symbol}: ${actualQuantity}`);
+        return false;
+      }
 
-      const notional = adjustedQuantity * currentPrice;
+      const stepSize = await this.binanceService.getStepSize(symbol);
+      const precision = Math.log10(1 / stepSize);
+      
+      // Miktarı stepSize'a göre uygun şekilde yuvarla
+      const adjustedQuantity = Math.floor(actualQuantity / stepSize) * stepSize;
+      
+      // Son adım olarak miktarı doğru basamak sayısına yuvarla
+      const finalQuantity = precision > 0 
+        ? adjustedQuantity.toFixed(precision) 
+        : adjustedQuantity.toString();
+      
+      logger.info(`Closing position for ${symbol}: Side: ${side}, Quantity: ${finalQuantity}, Position Side: ${positionSide}`);
+      
+      const notional = parseFloat(finalQuantity) * currentPrice;
       if (notional < 5) {
         logger.warn(`Notional value (${notional}) for ${symbol} is below Binance's minimum. Skipping close position.`);
         return false; // İşlem yapmadan çık
       }
 
-      logger.info(`Closing position for ${symbol}: Side: ${side}, Quantity: ${adjustedQuantity}, Position Side: ${positionSide}`);
       return await this.binanceService.placeMarketOrder({
         symbol,
         side,
-        quantity: adjustedQuantity,
+        quantity: finalQuantity,
         positionSide
       });
     } catch (error) {
