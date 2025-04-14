@@ -100,11 +100,11 @@ module.exports = {
   ],
   
   // Diğer stratejiler için izlenecek semboller
-  topSymbols: [
-    'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'AVAXUSDT',
-    'DOGEUSDT', 'ADAUSDT', 'DOTUSDT', 'LINKUSDT', 'MATICUSDT',
-    'XRPUSDT', 'NEARUSDT', 'ATOMUSDT', 'APTUSDT', 'TRXUSDT',
-  ],
+  // topSymbols: [
+  //   'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'AVAXUSDT',
+  //   'DOGEUSDT', 'ADAUSDT', 'DOTUSDT', 'LINKUSDT', 'MATICUSDT',
+  //   'XRPUSDT', 'NEARUSDT', 'ATOMUSDT', 'APTUSDT', 'TRXUSDT',
+  // ],
   
   // RL Bot'u otomatik başlatma ayarı
   autoStartRLBot: false,
