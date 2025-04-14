@@ -102,17 +102,43 @@ class BollingerStrategy {
     }
 
     calculateIndicators(candles) {
-        const closes = candles.map(c => parseFloat(c.close));
+        // Girdi kontrolü
+        if (!candles || !Array.isArray(candles) || candles.length === 0) {
+            logger.error('Invalid candles data provided to calculateIndicators');
+            return { bb: null };
+        }
+        
+        // Parametre kontrolü
+        if (!this.parameters || !this.parameters.bbPeriod) {
+            logger.error('Bollinger Band parameters are missing, using default values');
+            this.parameters = {
+                ...this.parameters,
+                bbPeriod: 20,
+                bbStdDev: 2
+            };
+        }
+        
+        const closes = candles.map(c => parseFloat(c.close)).filter(price => !isNaN(price));
+        
         if (closes.length < this.parameters.bbPeriod) {
-            logger.error('Not enough data to calculate Bollinger Bands');
+            logger.error(`Not enough valid price data to calculate Bollinger Bands (${closes.length} < ${this.parameters.bbPeriod})`);
             return { bb: null };
         }
 
         try {
             const bb = this.calculateBollingerBands(closes, this.parameters.bbPeriod, this.parameters.bbStdDev);
-            return { bb: bb[bb.length - 1] };
+            
+            if (!bb || bb.length === 0) {
+                logger.error('Bollinger Bands calculation returned empty result');
+                return { bb: null };
+            }
+            
+            const result = { bb: bb[bb.length - 1] };
+            logger.info(`Calculated Bollinger Bands: Upper=${result.bb.upper.toFixed(4)}, Lower=${result.bb.lower.toFixed(4)}, Basis=${result.bb.basis.toFixed(4)}`);
+            return result;
         } catch (error) {
             logger.error('Error calculating Bollinger Bands:', error.message);
+            logger.error(error.stack);
             return { bb: null };
         }
     }

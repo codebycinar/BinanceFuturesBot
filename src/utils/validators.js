@@ -25,18 +25,18 @@ const validateApiCredentials = (apiKey, apiSecret) => {
     );
   }
 
-  // Validate API key format
-  if (!/^[A-Za-z0-9]{64}$/.test(apiKey)) {
+  // Validate API key format - Binance API keys are typically long alphanumeric strings
+  if (!/^[A-Za-z0-9]{16,}$/.test(apiKey)) {
     throw new Error(
-      'Invalid API key format. Binance API keys should be 64 characters long and contain only letters and numbers.\n' +
+      'Invalid API key format. Binance API keys should be at least 16 characters long and contain only letters and numbers.\n' +
       'Please check your API key in the .env file.'
     );
   }
 
-  // Validate API secret format
-  if (!/^[A-Za-z0-9]{64}$/.test(apiSecret)) {
+  // Validate API secret format - Binance API secrets are typically long alphanumeric strings
+  if (!/^[A-Za-z0-9]{16,}$/.test(apiSecret)) {
     throw new Error(
-      'Invalid API secret format. Binance API secrets should be 64 characters long and contain only letters and numbers.\n' +
+      'Invalid API secret format. Binance API secrets should be at least 16 characters long and contain only letters and numbers.\n' +
       'Please check your API secret in the .env file.'
     );
   }

@@ -81,9 +81,27 @@ class TurtleTradingStrategy {
                 // Veritabanına erişilemiyorsa, config dosyasındaki parametrelerle devam et
             }
             
-            this.preferredTimeframe = this.parameters.timeframe || '4h';
+            this.preferredTimeframe = this.parameters.timeframe || '1d'; // Değiştirildi - modern strateji için 1d tercih edilir
             
-            logger.info('Turtle Trading Strategy initialized with parameters:', this.parameters);
+            logger.info(`Turtle Trading Strategy initialized with parameters:
+                - Entry Channel: ${this.parameters.entryChannel} periods
+                - Exit Channel: ${this.parameters.exitChannel} periods
+                - ATR Period: ${this.parameters.atrPeriod}
+                - Risk Percentage: ${this.parameters.riskPercentage}%
+                - ATR Multiplier: ${this.parameters.atrMultiplier}
+                - Confirmation Period: ${this.parameters.confirmationPeriod}
+                - Profit Multiplier: ${this.parameters.profitMultiplier}
+                - Max Entries: ${this.parameters.maxEntries}
+                - Timeframe: ${this.preferredTimeframe}
+                - Use Break-Even: ${this.parameters.useBreakEven ? 'Yes' : 'No'}
+            `);
+            
+            // Multi-Strategy yapısı ile uyumluluk kontrolü
+            if (!this.generateSignal) {
+                logger.error('TurtleTradingStrategy is missing the generateSignal method required for the multi-strategy system');
+            } else {
+                logger.info('TurtleTradingStrategy is compatible with the multi-strategy system');
+            }
         } catch (error) {
             logger.error('Error initializing Turtle Trading Strategy:', error);
         }

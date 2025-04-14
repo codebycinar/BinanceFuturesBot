@@ -58,6 +58,12 @@ class StrategyManager {
                         // Strateji örneğini oluştur
                         const strategyInstance = new StrategyClass();
                         
+                        // generateSignal metodunu kontrol et - multi-strateji sisteminde gerekli
+                        if (typeof strategyInstance.generateSignal !== 'function') {
+                            logger.error(`Strategy ${strategyName} does not have the required generateSignal method. Skipping.`);
+                            continue;
+                        }
+                        
                         // Strateji nesnesini sakla
                         this.strategies[strategyName] = strategyInstance;
                         
@@ -66,14 +72,23 @@ class StrategyManager {
                         
                         // Stratejiyi başlat (initialize metodu varsa)
                         if (typeof strategyInstance.initialize === 'function') {
-                            await strategyInstance.initialize();
-                            initializedCount++;
-                            
-                            // Başarıyla başlatılan stratejileri aktif olarak işaretle
-                            this.activeStrategies.push(strategyName);
-                            logger.info(`Initialized strategy: ${strategyName}`);
+                            try {
+                                await strategyInstance.initialize();
+                                initializedCount++;
+                                
+                                // Başarıyla başlatılan stratejileri aktif olarak işaretle
+                                this.activeStrategies.push(strategyName);
+                                logger.info(`Initialized strategy: ${strategyName}`);
+                            } catch (initError) {
+                                logger.error(`Error initializing strategy ${strategyName}: ${initError.message}`);
+                                // İnitialize başarısız olsa bile stratejiyi etkinleştir
+                                // Ancak durumu logla
+                                logger.warn(`Adding ${strategyName} to active strategies despite initialization failure`);
+                                this.activeStrategies.push(strategyName);
+                            }
                         } else {
-                            logger.warn(`Strategy ${strategyName} does not have an initialize method`);
+                            logger.warn(`Strategy ${strategyName} does not have an initialize method. Adding to active strategies anyway.`);
+                            this.activeStrategies.push(strategyName);
                         }
                     } catch (error) {
                         logger.error(`Error loading or initializing strategy ${strategyName}: ${error.message}`);

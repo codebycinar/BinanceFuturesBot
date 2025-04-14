@@ -168,12 +168,21 @@ class OnchainMetricsService {
 
   /**
    * Büyük cüzdan (whale) işlemlerini ve aktivitelerini tahmin eder
-   * CoinCap API ve Binance işlem verilerini kullanarak whale aktivitesini hesaplar
+   * Sadece Binance işlem verilerini kullanarak whale aktivitesini hesaplar
    * @param {string} asset - BTC, ETH gibi varlık kısaltması
    * @returns {number|null} - Tahmin edilen whale aktivite seviyesi (0-100)
    */
   async getWhaleTransactions(asset = 'BTC') {
     try {
+      // Varlık adını normalize et
+      asset = String(asset).toUpperCase();
+      
+      // Desteklenen varlık mı kontrol et
+      if (!this.supportedAssets.includes(asset)) {
+        logger.warn(`Unsupported asset ${asset} for onchain metrics, defaulting to BTC`);
+        asset = 'BTC';
+      }
+      
       // Cache'den veri varsa, onu kullan
       const cacheKey = `whale_transactions_${asset}`;
       if (this.cache[cacheKey] && Date.now() < this.cacheExpiry[cacheKey]) {
@@ -181,70 +190,96 @@ class OnchainMetricsService {
         return this.cache[cacheKey];
       }
       
-      // CoinCap ID'sini bul (slug formatına çevir)
-      const coincapSlug = this.coincapIdMap[asset] || asset.toLowerCase();
-      
-      // CoinCap v3 API'den veri al (API key ile)
-      const coincapUrl = `${this.coincapBaseUrl}/assets/${coincapSlug}`;
-      
-      const coinResponse = await this.throttledRequest('coincap', coincapUrl);
-      
-      // Binance'den büyük işlem verileri (son 24 saat)
-      const symbol = asset + 'USDT';
-      const aggTradesUrl = `${this.binanceBaseUrl}/aggTrades`;
-      const tradesResponse = await this.throttledRequest('binance', async () => {
-        return await axios.get(aggTradesUrl, {
-          params: {
-            symbol: symbol,
-            limit: 1000
-          }
-        });
-      });
-      
-      // Toplam işlem hacmi ve piyasa değeri
-      // CoinCap API v3 formatı için parse işlemi
-      let totalVolume = 0, marketCap = 0;
-      
-      try {
-        const data = coinResponse.data.data || coinResponse.data;
-        totalVolume = parseFloat(data.volumeUsd24Hr || data.volume_usd_24hr || 0);
-        marketCap = parseFloat(data.marketCapUsd || data.market_cap_usd || 0);
-      } catch (error) {
-        logger.error(`Error parsing CoinCap API v3 data: ${error.message}`);
+      // Binance sembol bilgilerini kontrol et
+      if (!this.binanceSymbolInfo || !this.binanceSymbolInfo[asset]) {
+        logger.warn(`No symbol info found for ${asset}, creating symbol as ${asset}USDT`);
+        // Eksik ise, nesneyi oluştur veya yeni varlık ekle
+        if (!this.binanceSymbolInfo) {
+          this.binanceSymbolInfo = {};
+        }
+        this.binanceSymbolInfo[asset] = `${asset}USDT`;
       }
       
-      // Ortalama işlem boyutu
-      const aggTrades = tradesResponse.data;
-      const tradeAmounts = aggTrades.map(trade => parseFloat(trade.p) * parseFloat(trade.q));
+      // Binance sembolünü oluştur
+      const symbol = this.binanceSymbolInfo[asset];
       
-      // Büyük işlemler (ortalama işlem büyüklüğünün 10 katından büyük)
-      const averageTradeSize = tradeAmounts.reduce((sum, amount) => sum + amount, 0) / tradeAmounts.length;
-      const largeTradeThreshold = averageTradeSize * 10;
-      const largeTradeCount = tradeAmounts.filter(amount => amount > largeTradeThreshold).length;
+      logger.info(`Fetching whale activity for ${asset} using symbol ${symbol}`);
       
-      // Büyük işlemlerin toplam hacmi
-      const largeTradeVolume = tradeAmounts
-        .filter(amount => amount > largeTradeThreshold)
-        .reduce((sum, amount) => sum + amount, 0);
-      
-      // Whale aktivite seviyesini hesapla (büyük işlemlerin toplam hacme oranı)
-      const volumeRatio = largeTradeVolume / totalVolume;
-      const whaleActivityFactor = Math.min(100, Math.max(0, volumeRatio * 100 * 50));
-      
-      // İşlem sayısına göre ek ağırlık
-      const tradeCountFactor = Math.min(50, largeTradeCount);
-      
-      // Toplam whale aktivite puanı (0-100 arası)
-      const whaleActivityScore = Math.min(100, whaleActivityFactor + tradeCountFactor);
-      
-      // Veriyi önbelleğe al
-      this.cache[cacheKey] = whaleActivityScore;
-      this.cacheExpiry[cacheKey] = Date.now() + this.cacheDuration;
-      
-      logger.info(`${asset} whale activity score: ${whaleActivityScore.toFixed(2)}, large trades: ${largeTradeCount}`);
-      return whaleActivityScore;
+      try {
+        // Binance'den 24 saatlik istatistikler
+        const tickerUrl = `${this.binanceBaseUrl}/ticker/24hr`;
+        const tickerResponse = await this.throttledRequest('binance', async () => {
+          return await axios.get(tickerUrl, {
+            params: { symbol }
+          });
+        });
+        
+        // Binance'den büyük işlem verileri (son 24 saat)
+        const aggTradesUrl = `${this.binanceBaseUrl}/aggTrades`;
+        const tradesResponse = await this.throttledRequest('binance', async () => {
+          return await axios.get(aggTradesUrl, {
+            params: {
+              symbol: symbol,
+              limit: 1000
+            }
+          });
+        });
+        
+        // Toplam işlem hacmi (direkt Binance'den)
+        const totalVolume = parseFloat(tickerResponse.data.volume || 0) * parseFloat(tickerResponse.data.weightedAvgPrice || 0);
+        
+        // Ortalama işlem boyutu
+        const aggTrades = tradesResponse.data;
+        
+        // Veri içeriğini doğrula
+        if (!Array.isArray(aggTrades) || aggTrades.length === 0) {
+          logger.warn(`No trade data found for ${symbol}, using default whale activity`);
+          return 30; // Varsayılan değer
+        }
+        
+        // Trade verileri üzerinde hata kontrolü
+        const validTrades = aggTrades.filter(trade => trade && trade.p && trade.q);
+        if (validTrades.length === 0) {
+          logger.warn(`No valid trade data found for ${symbol}, using default whale activity`);
+          return 30; // Varsayılan değer
+        }
+        
+        const tradeAmounts = validTrades.map(trade => parseFloat(trade.p) * parseFloat(trade.q));
+        
+        // Büyük işlemler (ortalama işlem büyüklüğünün 10 katından büyük)
+        const averageTradeSize = tradeAmounts.reduce((sum, amount) => sum + amount, 0) / tradeAmounts.length;
+        const largeTradeThreshold = averageTradeSize * 10;
+        const largeTradeCount = tradeAmounts.filter(amount => amount > largeTradeThreshold).length;
+        
+        // Büyük işlemlerin toplam hacmi
+        const largeTradeVolume = tradeAmounts
+          .filter(amount => amount > largeTradeThreshold)
+          .reduce((sum, amount) => sum + amount, 0);
+        
+        // Whale aktivite seviyesini hesapla (büyük işlemlerin toplam hacme oranı)
+        const volumeRatio = largeTradeVolume / (totalVolume || 1); // 0'a bölünmeyi önlemek için
+        const whaleActivityFactor = Math.min(100, Math.max(0, volumeRatio * 100 * 50));
+        
+        // İşlem sayısına göre ek ağırlık
+        const tradeCountFactor = Math.min(50, largeTradeCount);
+        
+        // Toplam whale aktivite puanı (0-100 arası)
+        const whaleActivityScore = Math.min(100, whaleActivityFactor + tradeCountFactor);
+        
+        // Veriyi önbelleğe al
+        this.cache[cacheKey] = whaleActivityScore;
+        this.cacheExpiry[cacheKey] = Date.now() + this.cacheDuration;
+        
+        logger.info(`${asset} whale activity score: ${whaleActivityScore.toFixed(2)}, large trades: ${largeTradeCount}`);
+        return whaleActivityScore;
+      } catch (reqError) {
+        logger.error(`API request error for ${asset}: ${reqError.message}`);
+        // API hatası durumunda varsayılan bir değer döndür
+        return 30; // Orta-düşük whale aktivitesi
+      }
     } catch (error) {
       logger.error(`Error estimating whale activity for ${asset}: ${error.message}`);
+      logger.error(error.stack);
       // Hata durumunda varsayılan bir değer döndür
       return 30; // Orta-düşük whale aktivitesi
     }
