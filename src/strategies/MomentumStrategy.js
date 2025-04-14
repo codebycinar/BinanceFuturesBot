@@ -132,45 +132,85 @@ class MomentumStrategy {
      * Squeeze Momentum hesaplama
      */
     calculateSqueezeMomentum(candles) {
-        const closes = candles.map(c => parseFloat(c.close));
-        const highs = candles.map(c => parseFloat(c.high));
-        const lows = candles.map(c => parseFloat(c.low));
+        try {
+            const closes = candles.map(c => parseFloat(c.close));
+            const highs = candles.map(c => parseFloat(c.high));
+            const lows = candles.map(c => parseFloat(c.low));
 
-        // Bollinger Bands hesaplama
-        const bbBasis = ti.SMA.calculate({ period: this.bbLength, values: closes });
-        const bbStdDev = ti.STDDEV.calculate({ period: this.bbLength, values: closes });
-        const upperBB = bbBasis.map((b, i) => b + (bbStdDev[i] || 0) * this.bbMult);
-        const lowerBB = bbBasis.map((b, i) => b - (bbStdDev[i] || 0) * this.bbMult);
-
-        // Keltner Channel hesaplama
-        const kcBasis = ti.SMA.calculate({ period: this.kcLength, values: closes });
-        const trueRange = [];
-        for (let i = 1; i < candles.length; i++) {
-            const curr = candles[i];
-            const prev = candles[i-1];
-            const high = parseFloat(curr.high);
-            const low = parseFloat(curr.low);
-            const prevClose = parseFloat(prev.close);
-            trueRange.push(Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose)));
-        }
-        
-        const kcRange = ti.SMA.calculate({ period: this.kcLength, values: trueRange });
-        const upperKC = [];
-        const lowerKC = [];
-        
-        for (let i = 0; i < kcBasis.length; i++) {
-            if (i < kcRange.length) {
-                upperKC.push(kcBasis[i] + kcRange[i] * this.kcMult);
-                lowerKC.push(kcBasis[i] - kcRange[i] * this.kcMult);
+            // technicalindicators paketi 'STDDEV' içermeyebilir, manüel hesaplayalım
+            // Bollinger Bands hesaplama
+            const bbBasis = ti.SMA.calculate({ period: this.bbLength, values: closes });
+            
+            // Standart sapma manüel hesaplama
+            const bbStdDev = [];
+            for (let i = this.bbLength - 1; i < closes.length; i++) {
+                const slice = closes.slice(i - this.bbLength + 1, i + 1);
+                const mean = slice.reduce((a, b) => a + b, 0) / this.bbLength;
+                const variance = slice.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / this.bbLength;
+                bbStdDev.push(Math.sqrt(variance));
             }
+            
+            const upperBB = bbBasis.map((b, i) => b + (bbStdDev[i] || 0) * this.bbMult);
+            const lowerBB = bbBasis.map((b, i) => b - (bbStdDev[i] || 0) * this.bbMult);
+
+            // Keltner Channel hesaplama
+            const kcBasis = ti.SMA.calculate({ period: this.kcLength, values: closes });
+            const trueRange = [];
+            for (let i = 1; i < candles.length; i++) {
+                const curr = candles[i];
+                const prev = candles[i-1];
+                const high = parseFloat(curr.high);
+                const low = parseFloat(curr.low);
+                const prevClose = parseFloat(prev.close);
+                trueRange.push(Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose)));
+            }
+            
+            // Eğer yeterli veri yoksa
+            if (trueRange.length < this.kcLength) {
+                logger.warn(`Not enough data for Keltner Channels, found ${trueRange.length} true ranges, need ${this.kcLength}`);
+                return { squeezeOn: false, squeezeOff: false };
+            }
+            
+            const kcRange = ti.SMA.calculate({ period: this.kcLength, values: trueRange });
+            const upperKC = [];
+            const lowerKC = [];
+            
+            for (let i = 0; i < kcBasis.length; i++) {
+                if (i < kcRange.length) {
+                    upperKC.push(kcBasis[i] + kcRange[i] * this.kcMult);
+                    lowerKC.push(kcBasis[i] - kcRange[i] * this.kcMult);
+                }
+            }
+
+            // Verilerimizin tam olduğunu kontrol et
+            if (lowerBB.length === 0 || upperBB.length === 0 || 
+                lowerKC.length === 0 || upperKC.length === 0) {
+                logger.warn("Insufficient data to calculate squeeze momentum");
+                return { squeezeOn: false, squeezeOff: false };
+            }
+
+            // Son durumu kontrol et
+            const lastIdx = Math.min(
+                lowerBB.length - 1, 
+                upperBB.length - 1,
+                lowerKC.length - 1,
+                upperKC.length - 1
+            );
+            
+            if (lastIdx < 1) {
+                logger.warn("Not enough data points to detect squeeze status");
+                return { squeezeOn: false, squeezeOff: false };
+            }
+            
+            const squeezeOn = lowerBB[lastIdx] > lowerKC[lastIdx] && upperBB[lastIdx] < upperKC[lastIdx];
+            const squeezeOff = !squeezeOn && (lowerBB[lastIdx-1] > lowerKC[lastIdx-1] && upperBB[lastIdx-1] < upperKC[lastIdx-1]);
+
+            logger.info(`Squeeze status: squeezeOn=${squeezeOn}, squeezeOff=${squeezeOff}`);
+            return { squeezeOn, squeezeOff };
+        } catch (error) {
+            logger.error(`Error calculating squeeze momentum: ${error.message}`);
+            return { squeezeOn: false, squeezeOff: false };
         }
-
-        // Son durumu kontrol et
-        const lastIdx = lowerBB.length - 1;
-        const squeezeOn = lowerBB[lastIdx] > lowerKC[lastIdx] && upperBB[lastIdx] < upperKC[lastIdx];
-        const squeezeOff = !squeezeOn && (lowerBB[lastIdx-1] > lowerKC[lastIdx-1] && upperBB[lastIdx-1] < upperKC[lastIdx-1]);
-
-        return { squeezeOn, squeezeOff };
     }
 
     /**
