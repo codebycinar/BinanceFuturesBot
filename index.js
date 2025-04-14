@@ -1,14 +1,10 @@
 const logger = require('./src/utils/logger');
-const { Telegraf } = require('telegraf');
 const dotenv = require('dotenv');
 const config = require('./src/config/config');
+const telegramService = require('./src/services/TelegramService');
 
 // Load environment variables
 dotenv.config();
-
-// Initialize Telegram bot
-const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
-const chatId = process.env.TELEGRAM_CHAT_ID;
 
 // Import services
 const BinanceService = require('./src/services/BinanceService');
@@ -29,8 +25,11 @@ async function init() {
   try {
     logger.info('Starting Binance Futures Bot with Enhanced Features');
     
+    // Initialize Telegram Service
+    await telegramService.initialize();
+    
     // Add RL bot commands to Telegram
-    bot.command('rl_start', async (ctx) => {
+    telegramService.addCommand('rl_start', async (ctx) => {
       if (!rlBot) {
         ctx.reply('🚀 Starting RL Trading Bot...');
         rlBot = new RLPositionManager();
@@ -41,7 +40,7 @@ async function init() {
       }
     });
     
-    bot.command('rl_stop', (ctx) => {
+    telegramService.addCommand('rl_stop', (ctx) => {
       if (rlBot) {
         ctx.reply('🛑 Stopping RL Trading Bot...');
         rlBot.stop();
@@ -52,7 +51,7 @@ async function init() {
       }
     });
     
-    bot.command('rl_status', async (ctx) => {
+    telegramService.addCommand('rl_status', async (ctx) => {
       const status = rlBot ? 'Running' : 'Stopped';
       
       let activePositions = 0;
@@ -73,7 +72,7 @@ Active RL Positions: ${activePositions}
       `);
     });
     
-    bot.command('rl_train', async (ctx) => {
+    telegramService.addCommand('rl_train', async (ctx) => {
       const args = ctx.message.text.split(' ');
       
       // Eğer parametre yoksa veya "all" parametresi varsa, tüm sembolleri eğit
@@ -125,7 +124,7 @@ Active RL Positions: ${activePositions}
     });
     
     // Help command
-    bot.command('help', (ctx) => {
+    telegramService.addCommand('help', (ctx) => {
       ctx.reply(`
 Binance Futures Bot Commands:
 /rl_start - Start the RL trading bot (will scan markets and make trades)
@@ -137,12 +136,10 @@ Binance Futures Bot Commands:
       `);
     });
     
-    // Start Telegram bot
-    await bot.launch();
-    logger.info('Telegram bot started successfully');
+    logger.info('Telegram service initialized successfully');
     
     // Welcome message
-    await bot.telegram.sendMessage(chatId, `
+    await telegramService.sendMessage(`
 🚀 Binance Futures Bot Starting
 - Version: 3.0.0
 - Features: Multi-Timeframe Analysis, Adaptive Strategy, Enhanced Position Management, Reinforcement Learning
@@ -235,7 +232,7 @@ process.on('SIGINT', async () => {
     rlBot = null;
   }
   
-  bot.telegram.sendMessage(chatId, '🛑 Bot is shutting down...')
+  telegramService.sendMessage('🛑 Bot is shutting down...')
     .then(() => {
       logger.info('Shutdown complete');
       process.exit(0);

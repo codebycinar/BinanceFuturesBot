@@ -4,7 +4,7 @@ const MultiTimeframeService = require('./MultiTimeframeService');
 const OrderService = require('./OrderService');
 const logger = require('../utils/logger');
 const config = require('../config/config');
-const { Telegraf } = require('telegraf');
+const telegramService = require('./TelegramService');
 const ti = require('technicalindicators');
 const { Position } = models;
 
@@ -25,8 +25,7 @@ class EnhancedPositionManager {
         this.breakEvenLevel = config.breakEvenLevel || 1.0; // Move stop loss to break even after 1% profit
         
         // Telegram notifications
-        this.bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
-        this.chatId = process.env.TELEGRAM_CHAT_ID;
+        this.telegramService = telegramService;
         
         // Active position tracking
         this.positionStates = new Map(); // Tracks additional state for positions that's not stored in DB
@@ -37,9 +36,10 @@ class EnhancedPositionManager {
             await this.binanceService.initialize();
             await this.mtfService.initialize();
             
-            // Start telegram bot
-            this.bot.start((ctx) => ctx.reply('Position Manager is running!'));
-            await this.bot.launch();
+            // Ensure Telegram service is initialized
+            if (!this.telegramService.isReady()) {
+                await this.telegramService.initialize();
+            }
             
             logger.info('Enhanced Position Manager initialized successfully');
             this.initialized = true;
@@ -737,17 +737,20 @@ class EnhancedPositionManager {
         return new Date(Math.ceil(now.getTime() / ms) * ms);
     }
     
-    // Telegram notification methods
+    // Telegram notification methods using the TelegramService
     async notifyPositionClosed(symbol, price, pnlPercent, reason) {
         try {
-            const message = `
-🔴 Position closed for ${symbol}
-- Closing Price: ${price}
-- P&L: ${pnlPercent.toFixed(2)}%
-- Reason: ${reason}
-            `;
+            // Create position object in the format expected by TelegramService
+            const position = {
+                symbol,
+                entryPrices: [0], // Not important for closed notification
+                closedPrice: price,
+                pnlPercent,
+                pnlAmount: 0, // Calculate if available
+                strategyUsed: 'Enhanced Position Manager'
+            };
             
-            await this.bot.telegram.sendMessage(this.chatId, message);
+            await this.telegramService.notifyPositionClosed(position, reason);
         } catch (error) {
             logger.error(`Error sending position closed notification: ${error.message}`);
         }
@@ -755,12 +758,8 @@ class EnhancedPositionManager {
     
     async notifyTrailingStopActivated(symbol, level) {
         try {
-            const message = `
-🔵 Trailing stop activated for ${symbol}
-- Initial trailing stop level: ${level}
-            `;
-            
-            await this.bot.telegram.sendMessage(this.chatId, message);
+            const details = `Initial trailing stop level: ${level}`;
+            await this.telegramService.notifyPositionUpdate(symbol, 'Trailing Stop Activated', details);
         } catch (error) {
             logger.error(`Error sending trailing stop notification: ${error.message}`);
         }
@@ -768,13 +767,8 @@ class EnhancedPositionManager {
     
     async notifyStopLossUpdate(symbol, level, reason) {
         try {
-            const message = `
-🟢 Stop loss updated for ${symbol}
-- New stop loss level: ${level}
-- Reason: ${reason}
-            `;
-            
-            await this.bot.telegram.sendMessage(this.chatId, message);
+            const details = `New stop loss level: ${level}`;
+            await this.telegramService.notifyPositionUpdate(symbol, `Stop Loss Updated (${reason})`, details);
         } catch (error) {
             logger.error(`Error sending stop loss update notification: ${error.message}`);
         }
@@ -782,15 +776,8 @@ class EnhancedPositionManager {
     
     async notifyPositionUpdate(symbol, action, details) {
         try {
-            const message = `
-🟡 Position update for ${symbol}
-- Action: ${action}
-- Allocation: +${details.additionalAllocation} USDT
-- Total Allocation: ${details.newTotalAllocation} USDT
-- Entry Price: ${details.entryPrice}
-            `;
-            
-            await this.bot.telegram.sendMessage(this.chatId, message);
+            const updateDetails = `Allocation: +${details.additionalAllocation} USDT\nTotal Allocation: ${details.newTotalAllocation} USDT\nEntry Price: ${details.entryPrice}`;
+            await this.telegramService.notifyPositionUpdate(symbol, action, updateDetails);
         } catch (error) {
             logger.error(`Error sending position update notification: ${error.message}`);
         }
@@ -798,12 +785,7 @@ class EnhancedPositionManager {
     
     async notifyError(symbol, errorMessage) {
         try {
-            const message = `
-❌ Error managing position for ${symbol}:
-- Error: ${errorMessage}
-            `;
-            
-            await this.bot.telegram.sendMessage(this.chatId, message);
+            await this.telegramService.notifyError(`Error managing position for ${symbol}`, errorMessage);
         } catch (error) {
             logger.error(`Error sending error notification: ${error.message}`);
         }

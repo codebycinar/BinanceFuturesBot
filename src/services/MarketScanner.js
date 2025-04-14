@@ -4,11 +4,9 @@ const TurtleTradingStrategy = require('../strategies/TurtleTradingStrategy');
 const config = require('../config/config');
 const logger = require('../utils/logger');
 const { models } = require('../db/db');
-const { Telegraf } = require('telegraf');
 const { Position } = models;
 const dotenv = require("dotenv");
-const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
-const chatId = process.env.TELEGRAM_CHAT_ID;
+const telegramService = require('./TelegramService');
 
 const MultiTimeframeService = require('../services/MultiTimeframeService');
 const EnhancedPositionManager = require('../services/EnhancedPositionManager');
@@ -98,7 +96,7 @@ class MarketScanner {
     `;
 
         try {
-            await this.bot.telegram.sendMessage(this.chatId, combinedMessage);
+            await telegramService.sendMessage(combinedMessage);
         } catch (error) {
             logger.error(`Error sending weak signal batch message: ${error.message}`);
         }
@@ -116,21 +114,18 @@ class MarketScanner {
             return;
         }
         
-        const marketConditions = this.lastMarketConditions[symbol] || {};
+        // Create position object format expected by TelegramService
+        const position = {
+            symbol,
+            entryPrices: [await this.binanceService.getCurrentPrice(symbol)],
+            stopLoss,
+            takeProfit,
+            strategyUsed: strategyUsed || 'Adaptive Strategy',
+            allocation
+        };
         
-        const message = `
-    ✅ New position opened for ${symbol}:
-    - Allocation: ${allocation} USDT
-    - Stop Loss: ${stopLoss}
-    - Take Profit: ${takeProfit}
-    - Strategy: ${strategyUsed || 'Adaptive Strategy'}
-    - Market Type: ${marketConditions.marketType || 'Unknown'}
-    - Trend: ${marketConditions.trend || 'Unknown'} (Strength: ${marketConditions.trendStrength || 'Unknown'}%)
-    - Volatility: ${marketConditions.volatility || 'Unknown'}
-    `;
-
         try {
-            await this.bot.telegram.sendMessage(this.chatId, message);
+            await telegramService.notifyNewPosition(position);
         } catch (error) {
             logger.error(`Error sending new position message: ${error.message}`);
         }
@@ -146,17 +141,18 @@ class MarketScanner {
             return;
         }
         
-        const isProfit = pnlPercent > 0;
-        const emoji = isProfit ? '🟢' : '🔴';
+        // Create position object with the format expected by TelegramService
+        const position = {
+            symbol,
+            entryPrices: [0], // Not important for closed notification
+            closedPrice: closePrice,
+            pnlPercent,
+            pnlAmount,
+            strategyUsed: 'Turtle Trading Strategy'
+        };
         
-        const message = `
-    ${emoji} Position for ${symbol} closed at price ${closePrice}
-    - PnL: ${pnlPercent.toFixed(2)}% (${pnlAmount.toFixed(2)} USDT)
-    ${isProfit ? '✅ PROFIT' : '❌ LOSS'}
-    `;
-
         try {
-            await this.bot.telegram.sendMessage(this.chatId, message);
+            await telegramService.notifyPositionClosed(position, 'Market Scanner Signal');
         } catch (error) {
             logger.error(`Error sending position closed message: ${error.message}`);
         }
@@ -172,13 +168,8 @@ class MarketScanner {
             return;
         }
         
-        const message = `
-❌ Error managing position for ${symbol}:
-- Error: ${errorMessage}
-`;
-
         try {
-            await this.bot.telegram.sendMessage(this.chatId, message);
+            await telegramService.notifyError(`Error managing position for ${symbol}`, errorMessage);
         } catch (error) {
             logger.error(`Error sending error message: ${error.message}`);
         }

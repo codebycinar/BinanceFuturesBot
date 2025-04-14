@@ -9,7 +9,7 @@ const RLModelService = require('./services/RLModelService');
 const RLSupportResistanceStrategy = require('./strategies/RLSupportResistanceStrategy');
 const EnhancedPositionManager = require('./services/EnhancedPositionManager');
 const config = require('./config/config');
-const { Telegraf } = require('telegraf');
+const telegramService = require('./services/TelegramService');
 const dotenv = require("dotenv");
 const express = require('express');
 const path = require('path');
@@ -24,12 +24,11 @@ let rlBot = null;
     // Load environment variables
     dotenv.config();
     
-    // Initialize Telegram bot (simple notification only)
-    const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
-    bot.start((ctx) => ctx.reply('Binance Futures Bot Online!'));
+    // Initialize Telegram Service
+    await telegramService.initialize();
     
     // Add RL bot commands to Telegram
-    bot.command('rl_start', async (ctx) => {
+    telegramService.addCommand('rl_start', async (ctx) => {
       if (!rlBot) {
         ctx.reply('🚀 Starting RL Trading Bot...');
         rlBot = new RLPositionManager();
@@ -40,7 +39,7 @@ let rlBot = null;
       }
     });
     
-    bot.command('rl_stop', (ctx) => {
+    telegramService.addCommand('rl_stop', (ctx) => {
       if (rlBot) {
         ctx.reply('🛑 Stopping RL Trading Bot...');
         rlBot.stop();
@@ -51,7 +50,7 @@ let rlBot = null;
       }
     });
     
-    bot.command('rl_status', async (ctx) => {
+    telegramService.addCommand('rl_status', async (ctx) => {
       const status = rlBot ? 'Running' : 'Stopped';
       
       let activePositions = 0;
@@ -72,7 +71,7 @@ Active RL Positions: ${activePositions}
       `);
     });
     
-    bot.command('rl_train', async (ctx) => {
+    telegramService.addCommand('rl_train', async (ctx) => {
       const args = ctx.message.text.split(' ');
       
       if (args.length !== 3) {
@@ -103,13 +102,9 @@ Active RL Positions: ${activePositions}
       }
     });
     
-    bot.launch().then(() => {
-      logger.info('Telegram bot started successfully');
-      bot.telegram.sendMessage(process.env.TELEGRAM_CHAT_ID, 'Binance Futures Bot started! 🚀')
-        .catch(err => logger.error('Error sending Telegram start message:', err));
-    }).catch(err => {
-      logger.error('Error starting Telegram bot:', err);
-    });
+    // Send welcome message
+    telegramService.sendMessage('Binance Futures Bot started! 🚀')
+      .catch(err => logger.error('Error sending Telegram start message:', err));
     
     // Initialize services
     logger.info('Initializing services...', { timestamp: new Date().toISOString() });

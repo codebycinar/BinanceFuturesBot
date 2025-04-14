@@ -1,37 +1,38 @@
 // TelegramPositionManagerBot.js
-const { Telegraf } = require('telegraf');
 const logger = require('../utils/logger');
 const { models } = require('../db/db');
 const { Position } = models;
 const BinanceService = require('./BinanceService');
 const config = require('../config/config');
+const telegramService = require('./TelegramService');
 
 class TelegramPositionManagerBot {
     constructor() {
-        this.bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
-        this.chatId = process.env.TELEGRAM_CHAT_ID;
+        this.telegramService = telegramService;
         this.binanceService = new BinanceService();
         this.autoTrackPositions = false; // Varsayılan olarak otomatik takip kapalı
     }
 
     async initialize() {
         try {
+            if (!this.telegramService.isReady()) {
+                await this.telegramService.initialize();
+            }
+            
             // Komutları tanımla
-            this.bot.command('start', this.handleStart.bind(this));
-            this.bot.command('help', this.handleHelp.bind(this));
-            this.bot.command('positions', this.handlePositions.bind(this));
-            this.bot.command('status', this.handleStatus.bind(this));
-            this.bot.command('close', this.handleClose.bind(this));
-            this.bot.command('track', this.handleTrack.bind(this));
-            this.bot.command('untrack', this.handleUntrack.bind(this));
-            this.bot.command('trackall', this.handleTrackAll.bind(this));
+            this.telegramService.addCommand('start', this.handleStart.bind(this));
+            this.telegramService.addCommand('help', this.handleHelp.bind(this));
+            this.telegramService.addCommand('positions', this.handlePositions.bind(this));
+            this.telegramService.addCommand('status', this.handleStatus.bind(this));
+            this.telegramService.addCommand('close', this.handleClose.bind(this));
+            this.telegramService.addCommand('track', this.handleTrack.bind(this));
+            this.telegramService.addCommand('untrack', this.handleUntrack.bind(this));
+            this.telegramService.addCommand('trackall', this.handleTrackAll.bind(this));
             
-            // Yazılı yanıtları işle
-            this.bot.on('text', this.handleTextMessage.bind(this));
+            // Add handler for text messages
+            this.telegramService.addTextHandler(this.handleTextMessage.bind(this));
             
-            // Botu başlat
-            await this.bot.launch();
-            logger.info('Telegram Position Manager Bot started');
+            logger.info('Telegram Position Manager Bot initialized');
             
             // Başlangıçta bilgi mesajı gönder, ancak izin sorma
             this.sendInitialMessage();
@@ -45,7 +46,7 @@ class TelegramPositionManagerBot {
 
     // Başlangıç mesajı
     async handleStart(ctx) {
-        await ctx.reply(`
+        const message = `
 Welcome to Binance Futures Bot!
 
 Use the following commands to manage your positions:
@@ -56,7 +57,8 @@ Use the following commands to manage your positions:
 /track [symbol] - Start tracking a specific position
 /untrack [symbol] - Stop tracking a specific position
 /trackall - Track all positions automatically
-        `);
+        `;
+        await ctx.reply(message);
     }
 
     // Yardım mesajı
@@ -356,19 +358,16 @@ ${totalPnl >= 0 ? '✅' : '❌'} Total PnL: ${totalPnl.toFixed(2)} USDT
     // Başlangıç bilgi mesajı gönder
     async sendInitialMessage() {
         try {
-            // Telegram token ve chat ID kontrolü
-            if (!process.env.TELEGRAM_BOT_TOKEN || !process.env.TELEGRAM_CHAT_ID) {
-                logger.warn('Telegram bot token or chat ID is missing. Skipping initial message.');
-                return;
-            }
+            const message = `Binance Futures Bot started! 🚀
+
+Use /help to see available commands.
+Use /track [symbol] to track specific positions.`;
+            const sent = await this.telegramService.sendMessage(message);
             
-            try {
-                await this.bot.telegram.sendMessage(this.chatId, 
-                    `Binance Futures Bot started! 🚀\n\nUse /help to see available commands.\nUse /track [symbol] to track specific positions.`);
+            if (sent) {
                 logger.info('Initial Telegram message sent successfully.');
-            } catch (telegramError) {
-                logger.error(`Error sending Telegram initial message: ${telegramError.message}`);
-                logger.error('Check if your Telegram bot token and chat ID are correct in .env file.');
+            } else {
+                logger.warn('Failed to send initial Telegram message.');
             }
         } catch (error) {
             logger.error(`Error in sendInitialMessage: ${error.message}`);
@@ -457,32 +456,11 @@ ${totalPnl >= 0 ? '✅' : '❌'} Total PnL: ${totalPnl.toFixed(2)} USDT
     // Pozisyon kapanış bildirimi
     async notifyPositionClosed(position) {
         try {
-            // Telegram token ve chat ID kontrolü
-            if (!process.env.TELEGRAM_BOT_TOKEN || !process.env.TELEGRAM_CHAT_ID) {
-                logger.warn('Telegram bot token or chat ID is missing. Skipping position closed notification.');
-                return;
-            }
+            if (!position) return;
             
-            try {
-                const { symbol, pnlPercent, pnlAmount, closedPrice, strategyUsed } = position;
-                const isProfit = pnlPercent >= 0;
-                const emoji = isProfit ? '🟢' : '🔴';
-                const pnlPrefix = isProfit ? '+' : '';
-                
-                const message = `
-${emoji} Position Closed:
-Symbol: ${symbol}
-Price: ${closedPrice}
-PnL: ${pnlPrefix}${pnlPercent.toFixed(2)}% (${pnlPrefix}${pnlAmount.toFixed(2)} USDT)
-Strategy: ${strategyUsed || 'Unknown'}
-Reason: ${position.exitReason || 'manual'}
-                `;
-                
-                await this.bot.telegram.sendMessage(this.chatId, message);
-                logger.info(`Position closed notification sent for ${symbol}`);
-            } catch (telegramError) {
-                logger.error(`Error sending Telegram position closed notification: ${telegramError.message}`);
-            }
+            const { symbol, pnlPercent, pnlAmount, closedPrice, strategyUsed } = position;
+            await this.telegramService.notifyPositionClosed(position, position.exitReason || 'manual');
+            logger.info(`Position closed notification sent for ${symbol}`);
         } catch (error) {
             logger.error(`Error in notifyPositionClosed: ${error.message}`);
         }
@@ -491,33 +469,10 @@ Reason: ${position.exitReason || 'manual'}
     // Pozisyon güncelleme bildirimi
     async notifyPositionUpdate(position, currentPrice, pnlPercent) {
         try {
-            // Telegram token ve chat ID kontrolü
-            if (!process.env.TELEGRAM_BOT_TOKEN || !process.env.TELEGRAM_CHAT_ID) {
-                logger.warn('Telegram bot token or chat ID is missing. Skipping position update notification.');
-                return;
-            }
-            
-            try {
-                const { symbol, entries } = position;
-                const entryPrice = position.entryPrices.reduce((sum, price) => sum + parseFloat(price), 0) / position.entryPrices.length;
-                const isProfit = pnlPercent >= 0;
-                const emoji = isProfit ? '🟢' : '🔴';
-                const pnlPrefix = isProfit ? '+' : '';
-                const pnlAmount = (position.totalAllocation * pnlPercent) / 100;
-                
-                const message = `
-📊 Position Update:
-Symbol: ${symbol} (${entries > 0 ? 'LONG' : 'SHORT'})
-Entry: ${entryPrice.toFixed(4)}
-Current: ${currentPrice.toFixed(4)}
-PnL: ${pnlPrefix}${pnlPercent.toFixed(2)}% (${pnlPrefix}${pnlAmount.toFixed(2)} USDT)
-                `;
-                
-                await this.bot.telegram.sendMessage(this.chatId, message);
-                logger.info(`Position update notification sent for ${symbol}`);
-            } catch (telegramError) {
-                logger.error(`Error sending Telegram position update notification: ${telegramError.message}`);
-            }
+            const { symbol } = position;
+            const details = `Current Price: ${currentPrice.toFixed(4)}\nPnL: ${pnlPercent.toFixed(2)}%`;
+            await this.telegramService.notifyPositionUpdate(symbol, 'Price Update', details);
+            logger.info(`Position update notification sent for ${symbol}`);
         } catch (error) {
             logger.error(`Error in notifyPositionUpdate: ${error.message}`);
         }
@@ -525,12 +480,8 @@ PnL: ${pnlPrefix}${pnlPercent.toFixed(2)}% (${pnlPrefix}${pnlAmount.toFixed(2)} 
 
     // Bot durdurma
     async stop() {
-        try {
-            await this.bot.stop();
-            logger.info('Telegram Position Manager Bot stopped');
-        } catch (error) {
-            logger.error(`Error stopping Telegram Position Manager Bot: ${error.message}`);
-        }
+        // Note: We don't stop the TelegramService here as it's a singleton and may be used by other components
+        logger.info('Telegram Position Manager Bot stopped');
     }
 }
 
