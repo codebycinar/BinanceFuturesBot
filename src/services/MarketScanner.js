@@ -22,8 +22,9 @@ class MarketScanner {
         // Strateji yöneticisi oluştur
         this.strategyManager = new StrategyManager();
         
-        // Öncelikli strateji
+        // Öncelikli ve ikincil stratejiler
         this.primaryStrategy = config.primaryStrategy || 'HybridOnchainStrategy';
+        this.secondaryStrategy = config.secondaryStrategy || 'AdaptiveStrategy';
         
         this.positionStates = {};
         this.weakSignalBuffer = []; // Zayıf sinyalleri gruplamak için buffer
@@ -38,6 +39,8 @@ class MarketScanner {
             'WEAK_SELL': 1, // Zayıf satış sinyali
             'NEUTRAL': 0  // Nötr sinyal
         };
+        
+        logger.info(`Market Scanner initialized with primary strategy: ${this.primaryStrategy} and secondary strategy: ${this.secondaryStrategy}`);
     }
     
     async initialize() {
@@ -152,7 +155,7 @@ class MarketScanner {
     /**
      * Pozisyon kapandığında mesaj gönderir.
      */
-    async notifyPositionClosed(symbol, closePrice, pnlPercent = 0, pnlAmount = 0) {
+    async notifyPositionClosed(symbol, closePrice, pnlPercent = 0, pnlAmount = 0, strategyUsed = null) {
         // Skip Telegram notifications in test mode
         if (process.env.NODE_ENV === 'test') {
             logger.info(`Test mode: Skipping Telegram notification for closing position ${symbol}`);
@@ -166,7 +169,7 @@ class MarketScanner {
             closedPrice: closePrice,
             pnlPercent,
             pnlAmount,
-            strategyUsed: 'Turtle Trading Strategy'
+            strategyUsed: strategyUsed || `${this.primaryStrategy} and ${this.secondaryStrategy}`
         };
         
         try {
@@ -284,7 +287,19 @@ class MarketScanner {
                 return;
             }
             
-            logger.info(`Best signal for ${symbol}: ${bestSignal.signal} from ${bestSignal.strategyName || 'Unknown'}, weight: ${bestSignal.signalWeight || 0}`);
+            // Strateji bilgisini belirgin şekilde kaydet
+            let strategyInfo;
+            if (bestSignal.strategyName) {
+                if (bestSignal.strategyName === this.primaryStrategy && signals.some(s => s.strategyName === this.secondaryStrategy)) {
+                    strategyInfo = `${this.primaryStrategy} with ${this.secondaryStrategy} confirmation`;
+                } else {
+                    strategyInfo = bestSignal.strategyName;
+                }
+            } else {
+                strategyInfo = `${this.primaryStrategy} and ${this.secondaryStrategy}`;
+            }
+            
+            logger.info(`Best signal for ${symbol}: ${bestSignal.signal} from ${strategyInfo}, weight: ${bestSignal.signalWeight || 0}`);
             
             // Mevcut fiyatı al
             const currentPrice = defaultCandles[defaultCandles.length - 1].close;
@@ -298,7 +313,7 @@ class MarketScanner {
                     bestSignal.stopLoss, 
                     bestSignal.takeProfit, 
                     bestSignal.allocation, 
-                    bestSignal.strategyName || 'Multi-Strategy'
+                    strategyInfo
                 );
             } else if (bestSignal.signal === 'WEAK_BUY' || bestSignal.signal === 'WEAK_SELL') {
                 const signalType = bestSignal.signal === 'WEAK_BUY' ? 'BUY' : 'SELL';
@@ -310,7 +325,7 @@ class MarketScanner {
                     bestSignal.takeProfit, 
                     bestSignal.allocation, 
                     bestSignal.unmetConditions || 'Unknown reasons',
-                    bestSignal.strategyName || 'Multi-Strategy'
+                    strategyInfo
                 );
             } else if (bestSignal.signal === 'ADD_BUY' || bestSignal.signal === 'ADD_SELL') {
                 // Mevcut pozisyonu bul ve giriş sayısını arttır
@@ -378,17 +393,25 @@ class MarketScanner {
         
         // Önce tüm güçlü sinyalleri değerlendir
         if (strongSignals.length > 0) {
-            // Öncelikli stratejinin güçlü bir sinyali var mı kontrol et
+            // Öncelikli stratejilerin (birincil ve ikincil) güçlü bir sinyali var mı kontrol et
             const primaryStrategySignal = strongSignals.find(s => s.strategyName === this.primaryStrategy);
-            if (primaryStrategySignal) {
-                // Ağırlık ekle
-                primaryStrategySignal.signalWeight = this.signalWeights[primaryStrategySignal.signal] + 2; // Öncelikli stratejiye ek puan
-                return primaryStrategySignal;
-            }
+            const secondaryStrategySignal = strongSignals.find(s => s.strategyName === this.secondaryStrategy);
             
-            // Her sinyale ağırlık ver ve en yüksek ağırlıklı sinyali döndür
+            // Ağırlıkları ekle
             strongSignals.forEach(s => {
                 s.signalWeight = this.signalWeights[s.signal] || 0;
+                
+                // Birincil stratejiye özel ağırlık ekleme
+                if (s.strategyName === this.primaryStrategy) {
+                    s.signalWeight += 2; // Birincil stratejiye en yüksek ek puan
+                    logger.info(`Added weight to primary strategy ${s.strategyName} signal: ${s.signal}, weight now: ${s.signalWeight}`);
+                }
+                
+                // İkincil stratejiye özel ağırlık ekleme
+                if (s.strategyName === this.secondaryStrategy) {
+                    s.signalWeight += 1; // İkincil stratejiye daha az ama yine de önemli ek puan
+                    logger.info(`Added weight to secondary strategy ${s.strategyName} signal: ${s.signal}, weight now: ${s.signalWeight}`);
+                }
                 
                 // Trend ile uyumlu sinyallere ek puan
                 if (s.indicators && this.lastMarketConditions[s.symbol]) {
@@ -398,9 +421,25 @@ class MarketScanner {
                     if ((trend === 'UP' && (signal === 'BUY' || signal === 'ADD_BUY')) ||
                         (trend === 'DOWN' && (signal === 'SELL' || signal === 'ADD_SELL'))) {
                         s.signalWeight += 1;
+                        logger.info(`Added trend-compatible weight to ${s.strategyName} signal, weight now: ${s.signalWeight}`);
                     }
                 }
             });
+            
+            // Her iki öncelikli stratejiden de aynı yönde sinyal geliyorsa büyük bonus ver
+            if (primaryStrategySignal && secondaryStrategySignal) {
+                const isPrimaryBuySide = ['BUY', 'ADD_BUY'].includes(primaryStrategySignal.signal);
+                const isSecondaryBuySide = ['BUY', 'ADD_BUY'].includes(secondaryStrategySignal.signal);
+                const isPrimarySellSide = ['SELL', 'ADD_SELL'].includes(primaryStrategySignal.signal);
+                const isSecondarySellSide = ['SELL', 'ADD_SELL'].includes(secondaryStrategySignal.signal);
+                
+                // İki strateji de aynı yönü gösteriyorsa
+                if ((isPrimaryBuySide && isSecondaryBuySide) || (isPrimarySellSide && isSecondarySellSide)) {
+                    primaryStrategySignal.signalWeight += 2;
+                    secondaryStrategySignal.signalWeight += 2;
+                    logger.info(`Both primary and secondary strategies signal the same direction. Added bonus weight.`);
+                }
+            }
             
             // En yüksek ağırlıklı sinyali döndür
             return strongSignals.reduce((best, current) => {
@@ -420,6 +459,15 @@ class MarketScanner {
             // Zayıf sinyallere ağırlık ver
             weakSignals.forEach(s => {
                 s.signalWeight = this.signalWeights[s.signal] || 0;
+                
+                // Birincil ve ikincil stratejilerin zayıf sinyallerine de ağırlık ver
+                if (s.strategyName === this.primaryStrategy) {
+                    s.signalWeight += 1; // Birincil stratejiye ek puan
+                }
+                
+                if (s.strategyName === this.secondaryStrategy) {
+                    s.signalWeight += 0.5; // İkincil stratejiye daha az ama yine de ek puan
+                }
                 
                 // Trend ile uyumlu sinyallere ek puan
                 if (s.indicators && this.lastMarketConditions[s.symbol]) {
@@ -771,7 +819,7 @@ class MarketScanner {
                         pnlAmount,
                         holdTime,
                         exitReason,
-                        strategy: position.strategyUsed || 'TurtleTradingStrategy'
+                        strategy: position.strategyUsed || `${this.primaryStrategy} and ${this.secondaryStrategy}`
                     });
                 } catch (error) {
                     logger.error(`Error updating performance metrics: ${error.message}`);
@@ -779,7 +827,7 @@ class MarketScanner {
             }
 
             logger.info(`Position for ${symbol} closed at price ${closePrice}. PnL: ${pnlPercent.toFixed(2)}% (${pnlAmount.toFixed(2)} USDT)`);
-            await this.notifyPositionClosed(symbol, closePrice, pnlPercent, pnlAmount);
+            await this.notifyPositionClosed(symbol, closePrice, pnlPercent, pnlAmount, position.strategyUsed);
             
             return true;
         } catch (error) {
@@ -1006,7 +1054,7 @@ class MarketScanner {
                     nextCandleCloseTime: this.getNextCandleCloseTime('1h'),
                     stopLoss,
                     takeProfit,
-                    strategyUsed: strategyUsed || 'TurtleTradingStrategy',
+                    strategyUsed: strategyUsed || `${this.primaryStrategy} and ${this.secondaryStrategy}`,
                     marketConditions: JSON.stringify(this.lastMarketConditions[symbol] || {}),
                     createdAt: new Date(),
                     updatedAt: new Date()
@@ -1030,7 +1078,7 @@ class MarketScanner {
                         step: 1,
                         stopLoss,
                         takeProfit,
-                        strategyUsed: strategyUsed || 'TurtleTradingStrategy',
+                        strategyUsed: strategyUsed || `${this.primaryStrategy} and ${this.secondaryStrategy}`,
                         createdAt: new Date(),
                         updatedAt: new Date()
                     };

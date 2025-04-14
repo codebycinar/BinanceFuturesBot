@@ -24,11 +24,9 @@ module.exports = {
   
   // Etkinleştirilmiş stratejiler (tüm stratejileri yüklemek yerine whitelist kullan)
   enabledStrategies: [
-    'TurtleTradingStrategy',
     'AdaptiveStrategy',
     'HybridOnchainStrategy',
     'MomentumStrategy',
-    'SupportResistanceStrategy',
     'BollingerStrategy',
     'AdvancedScalpingStrategy'
   ],
@@ -36,6 +34,9 @@ module.exports = {
   // Öncelikli strateji (her sembol için tüm stratejiler test edilecek)
   // Bu strateji pozisyon açmak için daha fazla ağırlık alacak
   primaryStrategy: 'HybridOnchainStrategy',
+  
+  // İkincil öncelikli strateji
+  secondaryStrategy: 'AdaptiveStrategy',
 
   // Strateji parametreleri 
   strategy: {
