@@ -194,7 +194,16 @@ class TurtleTradingStrategy {
                 
             const riskPerUnit = atr * this.parameters.atrMultiplier;
             const units = entryRisk / riskPerUnit;
-            const allocation = units * currentClose;
+            
+            // Maksimum pozisyon büyüklüğünü 30 USDT olarak sınırlandır
+            const maxPositionSize = config.static_position_size;
+            let allocation = units * currentClose;
+            
+            // Pozisyon boyutu kontrol ve sınırlama
+            if (allocation > maxPositionSize) {
+                allocation = maxPositionSize;
+                logger.info(`Position size capped at ${maxPositionSize} USDT for ${symbol}`);
+            }
             
             // Turtle Trading'e göre stop loss ve take profit hesaplama
             let stopLoss, takeProfit;

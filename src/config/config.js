@@ -13,7 +13,7 @@ module.exports = {
   topSymbols: [],
   
   // Maksimum açık pozisyon sayısı
-  maxOpenPositions: 5,
+  maxOpenPositions: 3,
   
   // Market tarama aralığı (ms)
   marketScanInterval: 5 * 60 * 1000, // 5 dakika
@@ -73,7 +73,7 @@ module.exports = {
 
   // Pozisyon boyutunu nasıl hesaplayacağını belirle
   calculate_position_size: false,  // false: sabit boyut, true: hesaplanmış boyut
-  static_position_size: 100, // USDT cinsinden sabit pozisyon boyutu
+  static_position_size: 30, // USDT cinsinden sabit pozisyon boyutu
   
   // Stop-loss ve Take-profit seviyeleri (yüzde cinsinden)
   stopLossPercent: 1, // %1 stop-loss
@@ -88,7 +88,7 @@ module.exports = {
 
   // Diğer ayarlar
   marketScanInterval: 120000, // 2 dakika
-  maxOpenPositions: 15, // Açık pozisyon limiti
+  maxOpenPositions: 3, // Açık pozisyon limiti
   
   // RL Bot için izlenecek semboller (daha az sayıda sembolle çalışalım)
   tradingPairs: [
