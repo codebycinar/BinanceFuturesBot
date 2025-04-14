@@ -251,6 +251,13 @@ Available commands:
         return (this.bot && this.isInitialized) || this.fallbackMode;
     }
 
+    // Helper to escape Markdown special characters
+    escapeMarkdown(text) {
+        if (!text) return '';
+        // Escape special Markdown characters: _ * [ ] ( ) ~ ` > # + - = | { } . !
+        return String(text).replace(/([_*\[\]()~`>#+=|{}.\!])/g, '\\$1');
+    }
+
     async sendMessage(message, options = {}) {
         // If in fallback mode, log the message but don't try to send
         if (this.fallbackMode) {
@@ -274,8 +281,16 @@ Available commands:
         }
 
         try {
+            let processedMessage = message;
+            
+            // If using Markdown, handle escaping properly
+            if (options.parse_mode === 'Markdown' || !options.parse_mode) {
+                // Apply escaping only to parts of the message that aren't inside formatting tags
+                processedMessage = this.processMarkdownMessage(message);
+            }
+            
             // Add timeout to prevent hanging
-            const sendPromise = this.bot.sendMessage(this.chatId, message, {
+            const sendPromise = this.bot.sendMessage(this.chatId, processedMessage, {
                 parse_mode: options.parse_mode || 'Markdown',
                 disable_web_page_preview: options.disable_preview !== false
             });
@@ -288,6 +303,20 @@ Available commands:
             return true;
         } catch (error) {
             logger.error(`Error sending Telegram message: ${error.message}`);
+            
+            // If it's a parsing error, try to send without Markdown formatting
+            if (error.message.includes("can't parse entities")) {
+                logger.info('Retrying message without Markdown formatting');
+                try {
+                    await this.bot.sendMessage(this.chatId, message, {
+                        parse_mode: undefined,
+                        disable_web_page_preview: options.disable_preview !== false
+                    });
+                    return true;
+                } catch (secondError) {
+                    logger.error(`Error resending message without formatting: ${secondError.message}`);
+                }
+            }
             
             // Check for fatal errors that require fallback mode
             if (
@@ -313,6 +342,35 @@ Available commands:
             return false;
         }
     }
+    
+    // Process a markdown message to properly escape special characters
+    processMarkdownMessage(message) {
+        // Handle bold text: ensure proper escaping of content between asterisks
+        const boldRegex = /\*(.*?)\*/g;
+        const parts = [];
+        let lastIndex = 0;
+        let match;
+        
+        while ((match = boldRegex.exec(message)) !== null) {
+            // Add text before the match (escaped)
+            if (match.index > lastIndex) {
+                parts.push(this.escapeMarkdown(message.substring(lastIndex, match.index)));
+            }
+            
+            // Add the bold text (without escaping the asterisks, but escape content inside)
+            const content = match[1];
+            parts.push(`*${this.escapeMarkdown(content)}*`);
+            
+            lastIndex = match.index + match[0].length;
+        }
+        
+        // Add any remaining text
+        if (lastIndex < message.length) {
+            parts.push(this.escapeMarkdown(message.substring(lastIndex)));
+        }
+        
+        return parts.join('');
+    }
 
     async sendFormattedMessage(title, content, options = {}) {
         const { emoji = '📊', isError = false } = options;
@@ -334,12 +392,12 @@ ${content}
         
         const message = `
 🔔 *New Position Opened:*
-Symbol: ${symbol} (${direction})
-Entry Price: ${entryPrice}
-Stop Loss: ${stopLoss}
-Take Profit: ${takeProfit}
-Strategy: ${strategyUsed || 'Unknown'}
-Allocation: ${allocation} USDT
+Symbol: ${this.escapeMarkdown(symbol)} (${direction})
+Entry Price: ${this.escapeMarkdown(String(entryPrice))}
+Stop Loss: ${this.escapeMarkdown(String(stopLoss))}
+Take Profit: ${this.escapeMarkdown(String(takeProfit))}
+Strategy: ${this.escapeMarkdown(strategyUsed || 'Unknown')}
+Allocation: ${this.escapeMarkdown(String(allocation))} USDT
         `;
         
         return this.sendMessage(message, { parse_mode: 'Markdown' });
@@ -353,14 +411,17 @@ Allocation: ${allocation} USDT
         const emoji = isProfit ? '🟢' : '🔴';
         const pnlPrefix = isProfit ? '+' : '';
         
+        const pnlPercentFormatted = pnlPercent?.toFixed(2) || '0.00';
+        const pnlAmountFormatted = pnlAmount?.toFixed(2) || '0.00';
+        
         const message = `
 ${emoji} *Position Closed:*
-Symbol: ${symbol}
-Entry: ${entryPrices[0]}
-Exit: ${closedPrice}
-PnL: ${pnlPrefix}${pnlPercent?.toFixed(2)}% (${pnlPrefix}${pnlAmount?.toFixed(2)} USDT)
-Strategy: ${strategyUsed || 'Unknown'}
-Reason: ${exitReason || 'manual'}
+Symbol: ${this.escapeMarkdown(symbol)}
+Entry: ${this.escapeMarkdown(String(entryPrices[0]))}
+Exit: ${this.escapeMarkdown(String(closedPrice))}
+PnL: ${pnlPrefix}${this.escapeMarkdown(pnlPercentFormatted)}% (${pnlPrefix}${this.escapeMarkdown(pnlAmountFormatted)} USDT)
+Strategy: ${this.escapeMarkdown(strategyUsed || 'Unknown')}
+Reason: ${this.escapeMarkdown(exitReason || 'manual')}
         `;
         
         return this.sendMessage(message, { parse_mode: 'Markdown' });
@@ -368,20 +429,24 @@ Reason: ${exitReason || 'manual'}
 
     async notifyPositionUpdate(symbol, updateType, details) {
         const message = `
-📝 *Position Update (${updateType}):*
-Symbol: ${symbol}
-${details}
+📝 *Position Update (${this.escapeMarkdown(updateType)}):*
+Symbol: ${this.escapeMarkdown(symbol)}
+${this.escapeMarkdown(details)}
         `;
         
         return this.sendMessage(message, { parse_mode: 'Markdown' });
     }
 
     async notifyStatus(activePositions, balanceInfo) {
+        const activePosCount = activePositions?.length || 0;
+        const balance = balanceInfo?.balance || 'N/A';
+        const availableBalance = balanceInfo?.availableBalance || 'N/A';
+        
         const message = `
 📊 *Bot Status:*
-Active Positions: ${activePositions?.length || 0}
-Balance: ${balanceInfo?.balance || 'N/A'} USDT
-Available: ${balanceInfo?.availableBalance || 'N/A'} USDT
+Active Positions: ${this.escapeMarkdown(String(activePosCount))}
+Balance: ${this.escapeMarkdown(String(balance))} USDT
+Available: ${this.escapeMarkdown(String(availableBalance))} USDT
         `;
         
         return this.sendMessage(message, { parse_mode: 'Markdown' });
@@ -390,8 +455,8 @@ Available: ${balanceInfo?.availableBalance || 'N/A'} USDT
     async notifyError(errorMessage, details = '') {
         const message = `
 ❌ *Error:*
-${errorMessage}
-${details ? `\nDetails: ${details}` : ''}
+${this.escapeMarkdown(errorMessage)}
+${details ? `\nDetails: ${this.escapeMarkdown(details)}` : ''}
         `;
         
         return this.sendMessage(message, { parse_mode: 'Markdown', isError: true });
@@ -402,10 +467,10 @@ ${details ? `\nDetails: ${details}` : ''}
         
         const message = `
 🔍 ${directionEmoji} *Signal Detected:*
-Symbol: ${symbol}
-Signal: ${signal}
-Price: ${price}
-${reason ? `Note: ${reason}` : ''}
+Symbol: ${this.escapeMarkdown(symbol)}
+Signal: ${this.escapeMarkdown(signal)}
+Price: ${this.escapeMarkdown(String(price))}
+${reason ? `Note: ${this.escapeMarkdown(reason)}` : ''}
         `;
         
         return this.sendMessage(message, { parse_mode: 'Markdown' });

@@ -74,6 +74,13 @@ Available commands:
         `);
     }
 
+    // Helper to escape special characters in text for Telegram
+    escapeMarkdownV2(text) {
+        if (!text) return '';
+        // Escape characters: _ * [ ] ( ) ~ ` > # + - = | { } . !
+        return String(text).replace(/([_*\[\]()~`>#+=|{}.\!])/g, '\\$1');
+    }
+
     // Aktif pozisyonları listele
     async handlePositions(ctx) {
         try {
@@ -104,12 +111,17 @@ Available commands:
                 const pnlFormatted = pnlPercent >= 0 ? `+${pnlPercent.toFixed(2)}%` : `${pnlPercent.toFixed(2)}%`;
                 const emoji = pnlPercent >= 0 ? '🟢' : '🔴';
                 
-                message += `${emoji} ${position.symbol} (${position.entries > 0 ? 'LONG' : 'SHORT'})\n`;
+                // Escape special characters to avoid Markdown parsing issues
+                const escapedSymbol = this.escapeMarkdownV2(position.symbol);
+                const escapedStrategy = this.escapeMarkdownV2(position.strategyUsed || 'Unknown');
+                const escapedDate = this.escapeMarkdownV2(new Date(position.createdAt).toLocaleString());
+                
+                message += `${emoji} ${escapedSymbol} (${position.entries > 0 ? 'LONG' : 'SHORT'})\n`;
                 message += `   Entry: ${entryPrice.toFixed(4)}\n`;
                 message += `   Current: ${currentPrice.toFixed(4)}\n`;
                 message += `   PnL: ${pnlFormatted}\n`;
-                message += `   Strategy: ${position.strategyUsed || 'Unknown'}\n`;
-                message += `   Started: ${new Date(position.createdAt).toLocaleString()}\n\n`;
+                message += `   Strategy: ${escapedStrategy}\n`;
+                message += `   Started: ${escapedDate}\n\n`;
             }
             
             await ctx.reply(message);
@@ -148,15 +160,22 @@ Available commands:
             
             const winRate = closedPositions.length > 0 ? (winCount / closedPositions.length * 100).toFixed(2) : 0;
             
+            // Escape special characters to avoid Markdown parsing issues
+            const balanceFormatted = this.escapeMarkdownV2(totalBalance.toFixed(2));
+            const availableFormatted = this.escapeMarkdownV2(availableBalance.toFixed(2));
+            const pnlFormatted = this.escapeMarkdownV2(totalPnl.toFixed(2));
+            const winRateFormatted = this.escapeMarkdownV2(winRate);
+            const statFormatted = this.escapeMarkdownV2(`${winCount}/${closedPositions.length}`);
+            
             const message = `
 📈 Account Status:
 
-💰 Balance: ${totalBalance.toFixed(2)} USDT
-💵 Available: ${availableBalance.toFixed(2)} USDT
+💰 Balance: ${balanceFormatted} USDT
+💵 Available: ${availableFormatted} USDT
 
 📊 Trading Performance (last 30 trades):
-${totalPnl >= 0 ? '✅' : '❌'} Total PnL: ${totalPnl.toFixed(2)} USDT
-🎯 Win Rate: ${winRate}% (${winCount}/${closedPositions.length})
+${totalPnl >= 0 ? '✅' : '❌'} Total PnL: ${pnlFormatted} USDT
+🎯 Win Rate: ${winRateFormatted}% (${statFormatted})
 
 🔄 Auto-tracking: ${this.autoTrackPositions ? 'ON' : 'OFF'}
             `;
@@ -286,7 +305,9 @@ ${totalPnl >= 0 ? '✅' : '❌'} Total PnL: ${totalPnl.toFixed(2)} USDT
             let message = 'Choose a position to track by using the /track command with one of these symbols:\n\n';
             
             positions.forEach(position => {
-                message += `- ${position.symbol}\n`;
+                // Escape any special characters in symbols to avoid Markdown parsing issues
+                const escapedSymbol = position.symbol.replace(/([_*\[\]()~`>#+=|{}.\!])/g, '\\$1');
+                message += `- ${escapedSymbol}\n`;
             });
             
             message += '\nExample: /track BTCUSDT';
