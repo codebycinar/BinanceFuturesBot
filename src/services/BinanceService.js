@@ -33,24 +33,30 @@ class BinanceService {
    */
   async checkAndSetPositionMode() {
     try {
-      // Pozisyon modunu doğrudan Binance API'sinden alalım
-      const timestamp = Date.now();
-      const queryString = `timestamp=${timestamp}`;
-      
-      // Binance API'si için HMAC-SHA256 imzası oluştur
-      const signature = require('crypto')
-        .createHmac('sha256', config.apiSecret)
-        .update(queryString)
-        .digest('hex');
-      
-      // Pozisyon modunu sorgula
-      const url = `https://fapi.binance.com/fapi/v1/positionSide/dual?${queryString}&signature=${signature}`;
-      
+      // API isteğini timeout ve retry ile yap
       try {
+        // Timestamp oluştur
+        const timestamp = Date.now();
+        const queryString = `timestamp=${timestamp}`;
+        
+        // Binance API'si için HMAC-SHA256 imzası oluştur
+        const signature = require('crypto')
+          .createHmac('sha256', config.apiSecret)
+          .update(queryString)
+          .digest('hex');
+        
+        // Endpoint URL'i
+        const url = `https://fapi.binance.com/fapi/v1/positionSide/dual?${queryString}&signature=${signature}`;
+        
+        // API yanıtını al (timeout ve retry ile)
         const response = await axios({
           method: 'GET',
           url: url,
-          headers: { 'X-MBX-APIKEY': config.apiKey }
+          headers: { 
+            'X-MBX-APIKEY': config.apiKey,
+            'User-Agent': 'BinanceFuturesBot/1.0' // Custom User-Agent
+          },
+          timeout: 10000 // 10 saniye timeout
         });
         
         // API yanıtını işle
@@ -64,11 +70,22 @@ class BinanceService {
         
         logger.info(`Detected account position mode from Binance: ${this.positionSideMode}`);
       } catch (apiError) {
-        logger.error(`Error fetching position mode from Binance: ${apiError.message}`);
-        if (apiError.response) {
-          logger.error(`API response: ${JSON.stringify(apiError.response.data)}`);
+        // Ağ hatası mı?
+        const isNetworkError = apiError.code === 'ECONNABORTED' || 
+                              apiError.message.includes('timeout') || 
+                              apiError.message.includes('socket') ||
+                              apiError.message.includes('network');
+        
+        if (isNetworkError) {
+          logger.error(`Network error fetching position mode from Binance: ${apiError.message}`);
+          logger.info(`Using default position mode: ${this.positionSideMode}. Please check your network connection.`);
+        } else {
+          logger.error(`Error fetching position mode from Binance: ${apiError.message}`);
+          if (apiError.response) {
+            logger.error(`API response: ${JSON.stringify(apiError.response.data)}`);
+          }
+          logger.info(`Using configured position mode: ${this.positionSideMode}. Please ensure this matches your Binance account settings.`);
         }
-        logger.info(`Using configured position mode: ${this.positionSideMode}. Please ensure this matches your Binance account settings.`);
       }
     } catch (error) {
       logger.error('Error checking position mode:', error);
@@ -81,14 +98,21 @@ class BinanceService {
 */
   async scanAllSymbols() {
     try {
-      const exchangeInfo = await this.client.futuresExchangeInfo();
-      const tradingSymbols = exchangeInfo.symbols
-        .filter(symbolInfo => symbolInfo.status === 'TRADING')
-        .map(symbolInfo => symbolInfo.symbol);
+      // retryableRequest ile ağ hatalarına karşı dayanıklı hale getir
+      return await this.retryableRequest(
+        async () => {
+          const exchangeInfo = await this.client.futuresExchangeInfo();
+          const tradingSymbols = exchangeInfo.symbols
+            .filter(symbolInfo => symbolInfo.status === 'TRADING')
+            .map(symbolInfo => symbolInfo.symbol);
 
-      // Yalnızca USDT ile bitenler
-      const usdtSymbols = tradingSymbols.filter(sym => sym.endsWith('USDT'));
-      return usdtSymbols;
+          // Yalnızca USDT ile bitenler
+          const usdtSymbols = tradingSymbols.filter(sym => sym.endsWith('USDT'));
+          return usdtSymbols;
+        }, 
+        'scanAllSymbols',
+        3  // 3 kez deneme yap
+      );
     } catch (error) {
       logger.error('Error fetching all symbols:', error);
       throw error;
@@ -105,37 +129,44 @@ class BinanceService {
    */
   async getCandles(symbol, interval = '1h', limit = 100, startTime = null, endTime = null) {
     try {
-      // Fiyat verisini almak için parametreleri hazırla
-      const params = {
-        symbol,
-        interval,
-        limit
-      };
+      // retryableRequest ile ağ hatalarına karşı dayanıklı hale getir
+      return await this.retryableRequest(
+        async () => {
+          // Fiyat verisini almak için parametreleri hazırla
+          const params = {
+            symbol,
+            interval,
+            limit
+          };
 
-      // Opsiyonel başlangıç ve bitiş zamanları
-      if (startTime) params.startTime = startTime;
-      if (endTime) params.endTime = endTime;
+          // Opsiyonel başlangıç ve bitiş zamanları
+          if (startTime) params.startTime = startTime;
+          if (endTime) params.endTime = endTime;
 
-      logger.info(`Fetching candles for ${symbol}, interval: ${interval}, limit: ${limit}`);
+          logger.info(`Fetching candles for ${symbol}, interval: ${interval}, limit: ${limit}`);
 
-      // Binance API'sinden mum verisini al
-      const candles = await this.client.futuresCandles(params);
+          // Binance API'sinden mum verisini al
+          const candles = await this.client.futuresCandles(params);
 
-      // Veriyi dönüştür
-      const formattedCandles = candles.map(c => ({
-        open: parseFloat(c.open),
-        high: parseFloat(c.high),
-        low: parseFloat(c.low),
-        close: parseFloat(c.close),
-        volume: parseFloat(c.volume),
-        timestamp: c.closeTime,
-      })).filter(c => !isNaN(c.close));
+          // Veriyi dönüştür
+          const formattedCandles = candles.map(c => ({
+            open: parseFloat(c.open),
+            high: parseFloat(c.high),
+            low: parseFloat(c.low),
+            close: parseFloat(c.close),
+            volume: parseFloat(c.volume),
+            timestamp: c.closeTime,
+          })).filter(c => !isNaN(c.close));
 
-      logger.info(`Received ${formattedCandles.length} candles for ${symbol}`);
-      return formattedCandles;
+          logger.info(`Received ${formattedCandles.length} candles for ${symbol}`);
+          return formattedCandles;
+        },
+        `getCandles for ${symbol} (${interval})`,
+        3 // 3 kez deneme yap
+      );
     } catch (error) {
-      logger.error(`Error fetching candles for ${symbol}:`, error);
-      return [];
+      logger.error(`Error fetching candles for ${symbol} after retries:`, error);
+      return []; // Hata durumunda boş dizi döndür
     }
   }
 
@@ -144,10 +175,17 @@ class BinanceService {
     */
   async getOpenPositions() {
     try {
-      const positions = await this.client.futuresPositionRisk();
-      return positions.filter(position => parseFloat(position.positionAmt) !== 0);
+      // retryableRequest ile ağ hatalarına karşı dayanıklı hale getir
+      return await this.retryableRequest(
+        async () => {
+          const positions = await this.client.futuresPositionRisk();
+          return positions.filter(position => parseFloat(position.positionAmt) !== 0);
+        },
+        'getOpenPositions',
+        3 // 3 kez deneme yap
+      );
     } catch (error) {
-      logger.error('Error fetching open positions:', error);
+      logger.error('Error fetching open positions after retries:', error);
       throw error;
     }
   }
@@ -157,9 +195,16 @@ class BinanceService {
      */
   async getOpenOrders(symbol) {
     try {
-      return await this.client.futuresOpenOrders({ symbol });
+      // retryableRequest ile ağ hatalarına karşı dayanıklı hale getir
+      return await this.retryableRequest(
+        async () => {
+          return await this.client.futuresOpenOrders({ symbol });
+        },
+        `getOpenOrders for ${symbol || 'all symbols'}`,
+        3 // 3 kez deneme yap
+      );
     } catch (error) {
-      logger.error('Error fetching open orders:', error);
+      logger.error('Error fetching open orders after retries:', error);
       throw error;
     }
   }
@@ -169,10 +214,17 @@ class BinanceService {
    */
   async getCurrentPrice(symbol) {
     try {
-      const ticker = await this.client.futuresPrices({ symbol });
-      return parseFloat(ticker[symbol]);
+      // retryableRequest ile ağ hatalarına karşı dayanıklı hale getir
+      return await this.retryableRequest(
+        async () => {
+          const ticker = await this.client.futuresPrices({ symbol });
+          return parseFloat(ticker[symbol]);
+        },
+        `getCurrentPrice for ${symbol}`,
+        3 // 3 kez deneme yap
+      );
     } catch (error) {
-      logger.error(`Error fetching current price for ${symbol}:`, error);
+      logger.error(`Error fetching current price for ${symbol} after retries:`, error);
       throw error;
     }
   }
@@ -861,18 +913,32 @@ class BinanceService {
    */
   async getFuturesBalance() {
     try {
-      const balances = await this.client.futuresAccountBalance();
-      const usdtBalance = balances.find(b => b.asset === 'USDT');
-      return usdtBalance ? parseFloat(usdtBalance.availableBalance) : 0;
+      // retryableRequest ile ağ hatalarına karşı dayanıklı hale getir
+      return await this.retryableRequest(
+        async () => {
+          const balances = await this.client.futuresAccountBalance();
+          const usdtBalance = balances.find(b => b.asset === 'USDT');
+          return usdtBalance ? parseFloat(usdtBalance.availableBalance) : 0;
+        },
+        'getFuturesBalance',
+        3 // 3 kez deneme yap
+      );
     } catch (error) {
-      logger.error('Error getting futures balance:', error);
+      logger.error('Error getting futures balance after retries:', error);
       throw error;
     }
   }
 
-  async fetchExchangeInfo() {
+  async fetchExchangeInfo(retryCount = 0) {
     try {
-      const response = await axios.get('https://fapi.binance.com/fapi/v1/exchangeInfo');
+      // Timeout ve retry konfigürasyonu ile axios isteği
+      const response = await axios.get('https://fapi.binance.com/fapi/v1/exchangeInfo', {
+        timeout: 10000, // 10 saniye timeout
+        headers: {
+          'User-Agent': 'BinanceFuturesBot/1.0' // Custom User-Agent
+        }
+      });
+      
       this.exchangeInfo = response.data.symbols.reduce((acc, symbol) => {
         acc[symbol.symbol] = {
           pricePrecision: symbol.pricePrecision,
@@ -886,7 +952,20 @@ class BinanceService {
       }, {});
       logger.info('Exchange info fetched and parsed successfully.');
     } catch (error) {
-      logger.error('Error fetching exchange info:', error.message);
+      // Network veya timeout hatası için yeniden deneme
+      if ((error.code === 'ECONNABORTED' || error.message.includes('timeout') || error.message.includes('socket')) && retryCount < 3) {
+        const nextRetry = retryCount + 1;
+        const delay = 1000 * Math.pow(2, retryCount); // Exponential backoff: 1s, 2s, 4s
+        
+        logger.warn(`Network error fetching exchange info (attempt ${nextRetry}/3), retrying in ${delay/1000}s: ${error.message}`);
+        
+        // Belirli bir gecikme sonra tekrar dene
+        await new Promise(resolve => setTimeout(resolve, delay));
+        return await this.fetchExchangeInfo(nextRetry);
+      }
+      
+      // Maksimum yeniden deneme sayısına ulaşıldı veya farklı bir hata
+      logger.error(`Error fetching exchange info${retryCount > 0 ? ` after ${retryCount} retries` : ''}: ${error.message}`);
       throw error;
     }
   }
@@ -955,16 +1034,59 @@ class BinanceService {
   * Aynı isimli iki metot olduğu için bu fonksiyon kaldırıldı ve yukarıdaki metot kullanılmaktadır.
   */
   /**
-   * Initialize fonksiyonu
+   * Ağ hatalarına karşı dayanıklı API isteği yapar
+   * @param {Function} requestFunc - API isteğini yapacak async fonksiyon
+   * @param {string} operationName - İşlem adı (loglama için)
+   * @param {number} maxRetries - Maksimum yeniden deneme sayısı
+   * @param {number} retryCount - Mevcut deneme sayısı
+   * @returns {Promise<any>} - API yanıtı
+   */
+  async retryableRequest(requestFunc, operationName, maxRetries = 3, retryCount = 0) {
+    try {
+      // İsteği yap
+      return await requestFunc();
+    } catch (error) {
+      // Network veya timeout hatası için yeniden deneme
+      const isNetworkError = error.code === 'ECONNABORTED' || 
+                            error.message.includes('timeout') || 
+                            error.message.includes('socket') ||
+                            error.message.includes('network');
+      
+      if (isNetworkError && retryCount < maxRetries) {
+        const nextRetry = retryCount + 1;
+        const delay = 1000 * Math.pow(2, retryCount); // Exponential backoff: 1s, 2s, 4s, 8s
+        
+        logger.warn(`Network error during ${operationName} (attempt ${nextRetry}/${maxRetries}), retrying in ${delay/1000}s: ${error.message}`);
+        
+        // Belirli bir gecikme sonra tekrar dene
+        await new Promise(resolve => setTimeout(resolve, delay));
+        return await this.retryableRequest(requestFunc, operationName, maxRetries, nextRetry);
+      }
+      
+      // Maksimum yeniden deneme sayısına ulaşıldı veya farklı bir hata
+      const errorMsg = `Error during ${operationName}${retryCount > 0 ? ` after ${retryCount} retries` : ''}: ${error.message}`;
+      logger.error(errorMsg);
+      throw new Error(errorMsg);
+    }
+  }
+
+  /**
+   * Initialize fonksiyonu - API bağlantı sorunlarına karşı dayanıklı
    */
   async initialize() {
     try {
-      // Exchange bilgilerini al
-      await this.fetchExchangeInfo();
+      // Exchange bilgilerini al - bağlantı hatalarına karşı yeniden deneme ile
+      await this.retryableRequest(
+        async () => await this.fetchExchangeInfo(),
+        'fetchExchangeInfo'
+      );
       logger.info('BinanceService initialized with exchange info.');
       
-      // Pozisyon modunu kontrol et ve ayarla
-      await this.checkAndSetPositionMode();
+      // Pozisyon modunu kontrol et ve ayarla - bağlantı hatalarına karşı yeniden deneme ile
+      await this.retryableRequest(
+        async () => await this.checkAndSetPositionMode(),
+        'checkAndSetPositionMode'
+      );
       logger.info(`BinanceService using position mode: ${this.positionSideMode}`);
     } catch (error) {
       logger.error('Error initializing BinanceService:', error.message);
