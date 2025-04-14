@@ -176,14 +176,16 @@ class MarketScanner {
     }
 
     /**
-     * Config'den tanımlanan sembolleri tarar.
+     * Config'den tanımlanan sembolleri veya tüm futures sembollerini tarar.
      */
     async scanConfigSymbols() {
         try {
-            const symbols = config.topSymbols;
+            // Config'de sembol listesi varsa kullan, yoksa tüm futures sembollerini tara
+            let symbols = config.topSymbols;
+            
             if (!symbols || symbols.length === 0) {
-                logger.warn('No symbols defined in config.topSymbols');
-                return;
+                logger.info('No symbols defined in config.topSymbols. Scanning all available USDT futures pairs.', { timestamp: new Date().toISOString() });
+                return await this.scanAllSymbols();
             }
 
             logger.info(`Scanning config-defined symbols: ${symbols.join(', ')}`, { timestamp: new Date().toISOString() });

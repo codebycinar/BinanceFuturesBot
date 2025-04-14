@@ -8,7 +8,16 @@ module.exports = {
   telegramChatId: process.env.TELEGRAM_CHAT_ID,
   testnet: process.env.TESTNET === 'true', // Testnet kullanıyorsanız .env dosyasına TESTNET=true ekleyin
   positionSideMode: process.env.POSITION_SIDE_MODE || 'One-Way', // 'One-Way' veya 'Hedge'
-
+  
+  // Boş bırakıldığında tüm USDT futures çiftleri taranır
+  topSymbols: [],
+  
+  // Maksimum açık pozisyon sayısı
+  maxOpenPositions: 5,
+  
+  // Market tarama aralığı (ms)
+  marketScanInterval: 5 * 60 * 1000, // 5 dakika
+  
   // Ana strateji: TurtleTradingStrategy
   // Aktif olarak kullanılacak strateji
   activeStrategy: 'TurtleTradingStrategy',
