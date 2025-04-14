@@ -129,18 +129,45 @@ class BinanceService {
      */
   async placeMarketOrder({ symbol, side, quantity, positionSide }) {
     try {
-      const orderData = {
+      // Exchange info'yu kontrol et
+      await this.getExchangeInfo();
+      const quantityPrecision = this.getQuantityPrecision(symbol);
+      const adjustedQuantity = parseFloat(quantity).toFixed(quantityPrecision);
+      
+      const timestamp = Date.now();
+      const params = new URLSearchParams({
         symbol,
         side,
         type: 'MARKET',
-        quantity,
+        quantity: adjustedQuantity,
         positionSide,
-      };
-
-      logger.info(`Sending MARKET order to Binance:`, orderData);
-      return await this.client.futuresOrder(orderData);
+        timestamp
+      });
+      
+      // Binance API'si için HMAC-SHA256 imzası oluştur
+      const signature = require('crypto')
+        .createHmac('sha256', config.apiSecret)
+        .update(params.toString())
+        .digest('hex');
+      
+      params.append('signature', signature);
+      
+      const url = 'https://fapi.binance.com/fapi/v1/order';
+      logger.info(`Sending direct MARKET order to Binance API:`, params.toString());
+      
+      const response = await axios({
+        method: 'POST',
+        url: url,
+        headers: { 'X-MBX-APIKEY': config.apiKey },
+        data: params.toString()
+      });
+      
+      return response.data;
     } catch (error) {
       logger.error(`Error in Binance API MARKET order for ${symbol}:`, error);
+      if (error.response) {
+        logger.error(`API response: ${JSON.stringify(error.response.data)}`);
+      }
       throw error;
     }
   }
@@ -438,19 +465,133 @@ class BinanceService {
     return parseFloat(quantity.toFixed(precision));
   }
 
+  /**
+   * Tüm açık emirleri iptal etme (doğrudan Binance API üzerinden)
+   */
+  async cancelAllOpenOrders(symbol) {
+    try {
+      logger.info(`Cancelling all open orders for ${symbol} using direct API call`);
+      
+      const timestamp = Date.now();
+      const params = new URLSearchParams({
+        symbol,
+        timestamp
+      });
+      
+      // Binance API'si için HMAC-SHA256 imzası oluştur
+      const signature = require('crypto')
+        .createHmac('sha256', config.apiSecret)
+        .update(params.toString())
+        .digest('hex');
+      
+      params.append('signature', signature);
+      
+      const url = 'https://fapi.binance.com/fapi/v1/allOpenOrders';
+      
+      try {
+        const response = await axios({
+          method: 'DELETE',
+          url: url,
+          headers: { 'X-MBX-APIKEY': config.apiKey },
+          params: new URLSearchParams(params)
+        });
+        
+        logger.info(`Successfully cancelled all open orders for ${symbol}`);
+        return true;
+      } catch (apiError) {
+        logger.error(`Error cancelling all open orders for ${symbol}:`, apiError.message);
+        if (apiError.response) {
+          logger.error(`API response: ${JSON.stringify(apiError.response.data)}`);
+        }
+        
+        // Açık emirleri al ve tek tek iptal etmeyi dene
+        const openOrdersUrl = 'https://fapi.binance.com/fapi/v1/openOrders';
+        const openOrdersParams = new URLSearchParams({
+          symbol,
+          timestamp: Date.now()
+        });
+        
+        const openOrdersSignature = require('crypto')
+          .createHmac('sha256', config.apiSecret)
+          .update(openOrdersParams.toString())
+          .digest('hex');
+        
+        openOrdersParams.append('signature', openOrdersSignature);
+        
+        const openOrdersResponse = await axios({
+          method: 'GET',
+          url: openOrdersUrl,
+          headers: { 'X-MBX-APIKEY': config.apiKey },
+          params: new URLSearchParams(openOrdersParams)
+        });
+        
+        const openOrders = openOrdersResponse.data;
+        
+        if (openOrders && openOrders.length > 0) {
+          logger.info(`Found ${openOrders.length} open orders for ${symbol}, trying individual cancellations`);
+          
+          let cancelledCount = 0;
+          for (const order of openOrders) {
+            try {
+              const cancelParams = new URLSearchParams({
+                symbol,
+                orderId: order.orderId,
+                timestamp: Date.now()
+              });
+              
+              const cancelSignature = require('crypto')
+                .createHmac('sha256', config.apiSecret)
+                .update(cancelParams.toString())
+                .digest('hex');
+              
+              cancelParams.append('signature', cancelSignature);
+              
+              const cancelUrl = 'https://fapi.binance.com/fapi/v1/order';
+              
+              await axios({
+                method: 'DELETE',
+                url: cancelUrl,
+                headers: { 'X-MBX-APIKEY': config.apiKey },
+                params: new URLSearchParams(cancelParams)
+              });
+              
+              logger.info(`Cancelled order for ${symbol} with ID ${order.orderId}, type: ${order.type}`);
+              cancelledCount++;
+            } catch (individualError) {
+              logger.error(`Error cancelling individual order ${order.orderId} for ${symbol}: ${individualError.message}`);
+            }
+          }
+          
+          logger.info(`Individually cancelled ${cancelledCount}/${openOrders.length} orders for ${symbol}`);
+          return cancelledCount > 0;
+        } else {
+          logger.info(`No open orders found for ${symbol}`);
+          return true;
+        }
+      }
+    } catch (error) {
+      logger.error(`Error in cancelAllOpenOrders for ${symbol}:`, error);
+      // Don't throw the error, just return false to indicate failure
+      return false;
+    }
+  }
+  
+  /**
+   * Sadece reduce-only emirleri iptal etme (eski fonksiyon)
+   */
   async cancelOpenOrders(symbol) {
     try {
       // O sembol için açık olan tüm emirleri al
-      const openOrders = await this.binanceService.getOpenOrders(symbol);
+      const openOrders = await this.client.futuresOpenOrders({ symbol });
 
       // Tüm açık emirleri iptal et
       for (const order of openOrders) {
         if (order.reduceOnly) { // Sadece reduce-only emirleri iptal et
-          await this.binanceService.client.futuresCancelOrder({
+          await this.client.futuresCancelOrder({
             symbol: symbol,
             orderId: order.orderId,
           });
-          logger.info(`Cancelled order for ${symbol} with ID ${order.orderId}`);
+          logger.info(`Cancelled reduce-only order for ${symbol} with ID ${order.orderId}`);
         }
       }
     } catch (error) {

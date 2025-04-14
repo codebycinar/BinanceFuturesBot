@@ -805,13 +805,30 @@ class MarketScanner {
             const useHedgeMode = config.positionSideMode === 'Hedge';
             const positionSide = useHedgeMode ? (signal === 'BUY' ? 'LONG' : 'SHORT') : undefined;
             
-            const marketOrderResult = await this.orderService.placeMarketOrder({
-                symbol,
-                side: signal,
-                quantity,
-                positionSide,
-            });
+            // Position Side modu kontrolü logları
+            logger.info(`Position Mode Settings:
+                - config.positionSideMode: ${config.positionSideMode}
+                - useHedgeMode: ${useHedgeMode}
+                - positionSide: ${positionSide || 'undefined (One-Way Mode)'}
+            `);
             
+            try {
+                const marketOrderResult = await this.orderService.placeMarketOrder({
+                    symbol,
+                    side: signal,
+                    quantity,
+                    positionSide,
+                });
+                logger.info(`Market order result details: ${JSON.stringify(marketOrderResult)}`);
+                return marketOrderResult;
+            } catch (orderError) {
+                logger.error(`Failed to place market order: ${orderError.message}`);
+                if (orderError.response && orderError.response.data) {
+                    logger.error(`API error details: ${JSON.stringify(orderError.response.data)}`);
+                }
+                throw orderError;
+            }
+            // Market order sonuçlarını kontrol et
             if (!marketOrderResult) {
                 throw new Error(`Failed to place market order for ${symbol}`);
             }

@@ -356,10 +356,22 @@ ${totalPnl >= 0 ? '✅' : '❌'} Total PnL: ${totalPnl.toFixed(2)} USDT
     // Başlangıç bilgi mesajı gönder
     async sendInitialMessage() {
         try {
-            await this.bot.telegram.sendMessage(this.chatId, 
-                `Binance Futures Bot started! 🚀\n\nUse /help to see available commands.\nUse /track [symbol] to track specific positions.`);
+            // Telegram token ve chat ID kontrolü
+            if (!process.env.TELEGRAM_BOT_TOKEN || !process.env.TELEGRAM_CHAT_ID) {
+                logger.warn('Telegram bot token or chat ID is missing. Skipping initial message.');
+                return;
+            }
+            
+            try {
+                await this.bot.telegram.sendMessage(this.chatId, 
+                    `Binance Futures Bot started! 🚀\n\nUse /help to see available commands.\nUse /track [symbol] to track specific positions.`);
+                logger.info('Initial Telegram message sent successfully.');
+            } catch (telegramError) {
+                logger.error(`Error sending Telegram initial message: ${telegramError.message}`);
+                logger.error('Check if your Telegram bot token and chat ID are correct in .env file.');
+            }
         } catch (error) {
-            logger.error(`Error sending initial message: ${error.message}`);
+            logger.error(`Error in sendInitialMessage: ${error.message}`);
         }
     }
 
@@ -445,47 +457,69 @@ ${totalPnl >= 0 ? '✅' : '❌'} Total PnL: ${totalPnl.toFixed(2)} USDT
     // Pozisyon kapanış bildirimi
     async notifyPositionClosed(position) {
         try {
-            const { symbol, pnlPercent, pnlAmount, closedPrice, strategyUsed } = position;
-            const isProfit = pnlPercent >= 0;
-            const emoji = isProfit ? '🟢' : '🔴';
-            const pnlPrefix = isProfit ? '+' : '';
+            // Telegram token ve chat ID kontrolü
+            if (!process.env.TELEGRAM_BOT_TOKEN || !process.env.TELEGRAM_CHAT_ID) {
+                logger.warn('Telegram bot token or chat ID is missing. Skipping position closed notification.');
+                return;
+            }
             
-            const message = `
+            try {
+                const { symbol, pnlPercent, pnlAmount, closedPrice, strategyUsed } = position;
+                const isProfit = pnlPercent >= 0;
+                const emoji = isProfit ? '🟢' : '🔴';
+                const pnlPrefix = isProfit ? '+' : '';
+                
+                const message = `
 ${emoji} Position Closed:
 Symbol: ${symbol}
 Price: ${closedPrice}
 PnL: ${pnlPrefix}${pnlPercent.toFixed(2)}% (${pnlPrefix}${pnlAmount.toFixed(2)} USDT)
 Strategy: ${strategyUsed || 'Unknown'}
 Reason: ${position.exitReason || 'manual'}
-            `;
-            
-            await this.bot.telegram.sendMessage(this.chatId, message);
+                `;
+                
+                await this.bot.telegram.sendMessage(this.chatId, message);
+                logger.info(`Position closed notification sent for ${symbol}`);
+            } catch (telegramError) {
+                logger.error(`Error sending Telegram position closed notification: ${telegramError.message}`);
+            }
         } catch (error) {
-            logger.error(`Error sending position closed notification: ${error.message}`);
+            logger.error(`Error in notifyPositionClosed: ${error.message}`);
         }
     }
 
     // Pozisyon güncelleme bildirimi
     async notifyPositionUpdate(position, currentPrice, pnlPercent) {
         try {
-            const { symbol, entries } = position;
-            const entryPrice = position.entryPrices.reduce((sum, price) => sum + parseFloat(price), 0) / position.entryPrices.length;
-            const isProfit = pnlPercent >= 0;
-            const emoji = isProfit ? '🟢' : '🔴';
-            const pnlPrefix = isProfit ? '+' : '';
-            const pnlAmount = (position.totalAllocation * pnlPercent) / 100;
+            // Telegram token ve chat ID kontrolü
+            if (!process.env.TELEGRAM_BOT_TOKEN || !process.env.TELEGRAM_CHAT_ID) {
+                logger.warn('Telegram bot token or chat ID is missing. Skipping position update notification.');
+                return;
+            }
             
-            const message = `
+            try {
+                const { symbol, entries } = position;
+                const entryPrice = position.entryPrices.reduce((sum, price) => sum + parseFloat(price), 0) / position.entryPrices.length;
+                const isProfit = pnlPercent >= 0;
+                const emoji = isProfit ? '🟢' : '🔴';
+                const pnlPrefix = isProfit ? '+' : '';
+                const pnlAmount = (position.totalAllocation * pnlPercent) / 100;
+                
+                const message = `
 📊 Position Update:
 Symbol: ${symbol} (${entries > 0 ? 'LONG' : 'SHORT'})
 Entry: ${entryPrice.toFixed(4)}
 Current: ${currentPrice.toFixed(4)}
 PnL: ${pnlPrefix}${pnlPercent.toFixed(2)}% (${pnlPrefix}${pnlAmount.toFixed(2)} USDT)
-            `;
-            
-            await this.bot.telegram.sendMessage(this.chatId, message);
+                `;
+                
+                await this.bot.telegram.sendMessage(this.chatId, message);
+                logger.info(`Position update notification sent for ${symbol}`);
+            } catch (telegramError) {
+                logger.error(`Error sending Telegram position update notification: ${telegramError.message}`);
+            }
         } catch (error) {
-            logger.error(`Error sending position update notification: ${error.message}`);
+            logger.error(`Error in notifyPositionUpdate: ${error.message}`);
         }
     }
 

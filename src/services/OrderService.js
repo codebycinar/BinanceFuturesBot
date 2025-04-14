@@ -13,9 +13,28 @@ class OrderService {
 
   async placeMarketOrder({ symbol, side, quantity, positionSide }) {
     try {
+      // Exchange info'yu kontrol edelim
+      await this.binanceService.getExchangeInfo();
       const quantityPrecision = this.binanceService.getQuantityPrecision(symbol);
-      const stepSize = parseFloat(this.binanceService.exchangeInfo[symbol].filters.LOT_SIZE.stepSize);
+      
+      // Step size değerini direkt olarak Exchange Info'dan alalım (eğer mevcutsa)
+      let stepSize = '1';
+      try {
+        if (this.binanceService.exchangeInfo[symbol] && 
+            this.binanceService.exchangeInfo[symbol].filters && 
+            this.binanceService.exchangeInfo[symbol].filters.LOT_SIZE) {
+          stepSize = parseFloat(this.binanceService.exchangeInfo[symbol].filters.LOT_SIZE.stepSize);
+        } else {
+          // Eğer LOT_SIZE filtresi bulunamazsa, API'den step size'ı almayı deneyelim
+          stepSize = await this.binanceService.getStepSize(symbol);
+        }
+      } catch (error) {
+        logger.warn(`Error getting step size from exchange info for ${symbol}, using default: ${error.message}`);
+        // Varsayılan değeri kullan
+        stepSize = '1';
+      }
 
+      // Miktarı ayarla
       const adjustedQuantity = this.binanceService.adjustPrecision(quantity, stepSize);
 
       // Eğer adjustedQuantity 0'dan küçükse veya uyumsuzsa hata ver
@@ -23,18 +42,29 @@ class OrderService {
         throw new Error(`Invalid quantity after adjustment: ${adjustedQuantity}`);
       }
 
-      const orderData = {
+      // Hedge modunu hesaba katarak pozisyon tarafını belirleme
+      const finalPositionSide = config.positionSideMode === 'Hedge' ? positionSide : undefined;
+      
+      logger.info(`Placing MARKET order:
+        - Symbol: ${symbol}
+        - Side: ${side}
+        - Quantity: ${adjustedQuantity}
+        - Position Side: ${finalPositionSide || 'One-Way (Default)'}
+        - Position Side Mode: ${config.positionSideMode}
+      `);
+      
+      // BinanceService üzerinden doğrudan market emri verme
+      return await this.binanceService.placeMarketOrder({
         symbol,
-        side,
-        type: 'MARKET',
+        side, 
         quantity: adjustedQuantity,
-        positionSide,
-      };
-
-      logger.info('Placing MARKET order:', orderData);
-      return await this.binanceService.client.futuresOrder(orderData);
+        positionSide: finalPositionSide
+      });
     } catch (error) {
-      logger.error(`Error in Binance API MARKET order for ${symbol}:`, error.message);
+      logger.error(`Error in MARKET order for ${symbol}:`, error.message);
+      if (error.response && error.response.data) {
+        logger.error(`API error details: ${JSON.stringify(error.response.data)}`);
+      }
       throw error;
     }
   }
