@@ -254,8 +254,11 @@ Available commands:
     // Helper to escape Markdown special characters
     escapeMarkdown(text) {
         if (!text) return '';
-        // Escape special Markdown characters: _ * [ ] ( ) ~ ` > # + - = | { } . !
-        return String(text).replace(/([_*\[\]()~`>#+=|{}.\!])/g, '\\$1');
+        // Convert to string if not already
+        const str = String(text);
+        // For regular Markdown mode (not MarkdownV2), we only need to escape a few characters
+        // This fixes the issue with excessive backslashes in messages
+        return str.replace(/([_*`\[\]])/g, '\\$1');
     }
 
     async sendMessage(message, options = {}) {
@@ -283,9 +286,9 @@ Available commands:
         try {
             let processedMessage = message;
             
-            // If using Markdown, handle escaping properly
+            // Use simplified Markdown escaping to avoid excessive backslashes
             if (options.parse_mode === 'Markdown' || !options.parse_mode) {
-                // Apply escaping only to parts of the message that aren't inside formatting tags
+                // We use a simple approach that doesn't over-escape
                 processedMessage = this.processMarkdownMessage(message);
             }
             
@@ -345,6 +348,13 @@ Available commands:
     
     // Process a markdown message to properly escape special characters
     processMarkdownMessage(message) {
+        if (!message) return '';
+        
+        // For simpler Markdown parsing that won't excessively escape
+        // Just lightly escape the basic formatting characters
+        return String(message).replace(/([_*`])/g, '\\$1');
+        
+        /* Old complex implementation was causing issues with excessive escaping
         // Handle bold text: ensure proper escaping of content between asterisks
         const boldRegex = /\*(.*?)\*/g;
         const parts = [];
@@ -370,12 +380,14 @@ Available commands:
         }
         
         return parts.join('');
+        */
     }
 
     async sendFormattedMessage(title, content, options = {}) {
         const { emoji = '📊', isError = false } = options;
         const statusEmoji = isError ? '❌' : emoji;
         
+        // No escaping needed, processMarkdownMessage will handle this properly
         const message = `
 ${statusEmoji} *${title}*
 
@@ -390,14 +402,15 @@ ${content}
         const entryPrice = entryPrices[0];
         const direction = position.entries > 0 ? 'LONG 📈' : 'SHORT 📉';
         
+        // Simplified message without excessive escaping
         const message = `
 🔔 *New Position Opened:*
-Symbol: ${this.escapeMarkdown(symbol)} (${direction})
-Entry Price: ${this.escapeMarkdown(String(entryPrice))}
-Stop Loss: ${this.escapeMarkdown(String(stopLoss))}
-Take Profit: ${this.escapeMarkdown(String(takeProfit))}
-Strategy: ${this.escapeMarkdown(strategyUsed || 'Unknown')}
-Allocation: ${this.escapeMarkdown(String(allocation))} USDT
+Symbol: ${symbol} (${direction})
+Entry Price: ${entryPrice}
+Stop Loss: ${stopLoss}
+Take Profit: ${takeProfit}
+Strategy: ${strategyUsed || 'Unknown'}
+Allocation: ${allocation} USDT
         `;
         
         return this.sendMessage(message, { parse_mode: 'Markdown' });
@@ -414,24 +427,26 @@ Allocation: ${this.escapeMarkdown(String(allocation))} USDT
         const pnlPercentFormatted = pnlPercent?.toFixed(2) || '0.00';
         const pnlAmountFormatted = pnlAmount?.toFixed(2) || '0.00';
         
+        // Using simple string formatting without excessive escaping
         const message = `
 ${emoji} *Position Closed:*
-Symbol: ${this.escapeMarkdown(symbol)}
-Entry: ${this.escapeMarkdown(String(entryPrices[0]))}
-Exit: ${this.escapeMarkdown(String(closedPrice))}
-PnL: ${pnlPrefix}${this.escapeMarkdown(pnlPercentFormatted)}% (${pnlPrefix}${this.escapeMarkdown(pnlAmountFormatted)} USDT)
-Strategy: ${this.escapeMarkdown(strategyUsed || 'Unknown')}
-Reason: ${this.escapeMarkdown(exitReason || 'manual')}
+Symbol: ${symbol}
+Entry: ${entryPrices[0]}
+Exit: ${closedPrice}
+PnL: ${pnlPrefix}${pnlPercentFormatted}% (${pnlPrefix}${pnlAmountFormatted} USDT)
+Strategy: ${strategyUsed || 'Unknown'}
+Reason: ${exitReason || 'manual'}
         `;
         
         return this.sendMessage(message, { parse_mode: 'Markdown' });
     }
 
     async notifyPositionUpdate(symbol, updateType, details) {
+        // Simplified message without excessive escaping
         const message = `
-📝 *Position Update (${this.escapeMarkdown(updateType)}):*
-Symbol: ${this.escapeMarkdown(symbol)}
-${this.escapeMarkdown(details)}
+📝 *Position Update (${updateType}):*
+Symbol: ${symbol}
+${details}
         `;
         
         return this.sendMessage(message, { parse_mode: 'Markdown' });
@@ -442,21 +457,23 @@ ${this.escapeMarkdown(details)}
         const balance = balanceInfo?.balance || 'N/A';
         const availableBalance = balanceInfo?.availableBalance || 'N/A';
         
+        // Simplified message without excessive escaping
         const message = `
 📊 *Bot Status:*
-Active Positions: ${this.escapeMarkdown(String(activePosCount))}
-Balance: ${this.escapeMarkdown(String(balance))} USDT
-Available: ${this.escapeMarkdown(String(availableBalance))} USDT
+Active Positions: ${activePosCount}
+Balance: ${balance} USDT
+Available: ${availableBalance} USDT
         `;
         
         return this.sendMessage(message, { parse_mode: 'Markdown' });
     }
 
     async notifyError(errorMessage, details = '') {
+        // Simplified message without excessive escaping
         const message = `
 ❌ *Error:*
-${this.escapeMarkdown(errorMessage)}
-${details ? `\nDetails: ${this.escapeMarkdown(details)}` : ''}
+${errorMessage}
+${details ? `\nDetails: ${details}` : ''}
         `;
         
         return this.sendMessage(message, { parse_mode: 'Markdown', isError: true });
@@ -465,12 +482,13 @@ ${details ? `\nDetails: ${this.escapeMarkdown(details)}` : ''}
     async notifySignal(symbol, signal, price, reason = '') {
         const directionEmoji = signal.includes('BUY') ? '📈' : '📉';
         
+        // Simplified message without excessive escaping
         const message = `
 🔍 ${directionEmoji} *Signal Detected:*
-Symbol: ${this.escapeMarkdown(symbol)}
-Signal: ${this.escapeMarkdown(signal)}
-Price: ${this.escapeMarkdown(String(price))}
-${reason ? `Note: ${this.escapeMarkdown(reason)}` : ''}
+Symbol: ${symbol}
+Signal: ${signal}
+Price: ${price}
+${reason ? `Note: ${reason}` : ''}
         `;
         
         return this.sendMessage(message, { parse_mode: 'Markdown' });
