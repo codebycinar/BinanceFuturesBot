@@ -1,25 +1,28 @@
 /**
  * OnchainMetricsService.js - Kripto varlıklar için onchain metrikleri sağlayan servis
  * 
- * Bu servis, çeşitli ücretsiz API'lar aracılığıyla blockchain üzerindeki 
+ * Bu servis, çeşitli API'lar aracılığıyla blockchain üzerindeki 
  * verileri analiz ederek, piyasaya giren/çıkan para akışı, 
  * whale hareketleri ve akıllı para davranışları hakkında bilgi sağlar.
  * 
- * Kullanılan ücretsiz veri kaynakları:
- * - CoinCap API: Market verisi (artık ana kaynak olarak kullanılır)
- * - CoinGecko API: Market verisi ve sosyal metrikler (fallback olarak kullanılır)
- * - WhaleAlert API: Büyük işlemler
- * - Binance API: Exchange likiditesi ve akışı
- * - Blockchain.com API: Bitcoin ağ verileri
- * - Etherscan API: Ethereum ağ verileri
+ * Kullanılan veri kaynakları:
+ * - CoinCap API (API key ile): Market verisi (ana kaynak)
+ * - Binance API: Exchange likiditesi, akışı, fiyat ve hacim verileri
  * 
- * Throttling ve rate limit yönetimi:
+ * Temel stratejiler:
+ * - Exchange net flow: Order book ve trade verilerinden hesaplanır
+ * - Whale Activity: Ortalamadan büyük işlemlerin tespiti
+ * - Market sentiment: Fiyat verilerine dayalı analiz
+ * - Market NVT: Fiyat/hacim ilişkisine dayalı değerleme
+ * - SOPR benzeri analiz: RSI ve işlem verilerinden yaklaşık hesaplama
+ * 
+ * Diğer özellikler:
+ * - CoinCap API için kayıtlı API key kullanımı (aylık 2,500 kredi)
  * - Tüm API istekleri throttledRequest metodu üzerinden yapılır
- * - Her API için ayrı gecikme süreleri uygulanır (CoinGecko: 10s, CoinCap: 1s, Binance: 0.5s)
- * - 429 (Too Many Requests) hatası durumunda otomatik geri çekilme ve yeniden deneme
- * - CoinGecko rate limit sorunları nedeniyle CoinCap tercih edilir
- * - Her API kaynağı için fallback mekanizması (birincil API hatası durumunda ikincil'e geçiş)
- * - Önbellek süresi 2 saate çıkarıldı (önceki: 30 dakika)
+ * - Uzun süreli önbellek (6 saat) ile API isteklerinin sayısı minimize edilir
+ * - Rate limit hatalarına karşı otomatik geri çekilme ve yeniden deneme
+ * - Maximum retry limiti ile sonsuz döngülerin önlenmesi
+ * - Kredi kullanımını optimize etmek için akıllı önbellekleme
  */
 const axios = require('axios');
 const logger = require('../utils/logger');
@@ -27,58 +30,51 @@ const config = require('../config/config');
 
 class OnchainMetricsService {
   constructor() {
-    // API kimlik bilgileri (config.js'den alınacak)
-    this.etherscanApiKey = config.etherscanApiKey || '';
-    this.whaleAlertApiKey = config.whaleAlertApiKey || '';
+    // API kimlik bilgileri
+    this.coincapApiKey = 'b8d054986a573ef5ac4fd82ef792eec7dc773ab10efd063c3e024fdfddb3a19b';
     
     // API tabanları
-    this.coingeckoBaseUrl = 'https://api.coingecko.com/api/v3';
-    this.coincapBaseUrl = 'https://api.coincap.io/v2'; // Yedek API
+    this.coincapBaseUrl = 'https://api.coincap.io/v2';
     this.binanceBaseUrl = 'https://api.binance.com/api/v3';
-    this.etherscanBaseUrl = 'https://api.etherscan.io/api';
-    this.blockchainBaseUrl = 'https://api.blockchain.info';
-    this.whaleAlertBaseUrl = 'https://api.whale-alert.io/v1';
     
     // Önbellek sistemi
     this.cache = {};
     this.cacheExpiry = {};
-    this.cacheDuration = 360 * 60 * 1000; // 6 saat (önbellek süresini daha da uzattık)
-    
-    // Bazı metrikler için daha kısa önbellek süreleri (seçenek olarak)
-    this.shortCacheDuration = 120 * 60 * 1000; // 2 saat
+    this.cacheDuration = 360 * 60 * 1000; // 6 saat önbellek
     
     // API istek yönetimi
     this.lastRequestTime = {};
     this.requestDelay = {
-      'coingecko': 20000, // CoinGecko için 20 saniye gecikme (rate limit nedeniyle arttırıldı)
-      'coincap': 10000,   // CoinCap için 10 saniye gecikme (rate limit nedeniyle arttırıldı)
+      'coincap': 1000,    // CoinCap için 1 saniye gecikme (API key kullandığımız için kısa)
       'binance': 500      // Binance için 0.5 saniye gecikme
+    };
+    
+    // API çağrı sayısı istatistikleri (kredi kullanımını takip etmek için)
+    this.apiCallCount = {
+      'coincap': 0
     };
     
     // API hataları için maksimum yeniden deneme sayısı
     this.maxRetries = 3;
     
-    // Hangi API'nin öncelikli kullanılacağını belirle
-    this.preferCoincap = true; // CoinGecko rate limit sorunları nedeniyle CoinCap'i tercih et
-    
     // Desteklenen varlıklar
     this.supportedAssets = ['BTC', 'ETH', 'BNB', 'SOL', 'ADA', 'XRP', 'DOT'];
     
-    // Sembol eşleştirme tablosu (Binance sembollerini CoinGecko ID'lerine dönüştürmek için)
-    this.coinIdMap = {
+    // CoinCap ID eşleştirme tablosu
+    this.coincapIdMap = {
       'BTC': 'bitcoin',
       'ETH': 'ethereum',
-      'BNB': 'binancecoin',
+      'BNB': 'binance-coin',
       'SOL': 'solana',
       'ADA': 'cardano',
-      'XRP': 'ripple',
+      'XRP': 'xrp',
       'DOT': 'polkadot',
-      'AVAX': 'avalanche-2',
-      'MATIC': 'matic-network',
+      'AVAX': 'avalanche',
+      'MATIC': 'polygon',
       'LINK': 'chainlink'
     };
     
-    logger.info('OnchainMetricsService initialized with free API sources (CoinCap primary, CoinGecko fallback)');
+    logger.info('OnchainMetricsService initialized with CoinCap API key (2,500 monthly credits)');
   }
 
   /**
@@ -180,7 +176,7 @@ class OnchainMetricsService {
 
   /**
    * Büyük cüzdan (whale) işlemlerini ve aktivitelerini tahmin eder
-   * CoinGecko API ve Binance işlem verilerini kullanarak whale aktivitesini hesaplar
+   * CoinCap API ve Binance işlem verilerini kullanarak whale aktivitesini hesaplar
    * @param {string} asset - BTC, ETH gibi varlık kısaltması
    * @returns {number|null} - Tahmin edilen whale aktivite seviyesi (0-100)
    */
@@ -193,71 +189,15 @@ class OnchainMetricsService {
         return this.cache[cacheKey];
       }
       
-      // ID'yi bul
-      const coinId = this.coinIdMap[asset] || asset.toLowerCase();
+      // CoinCap ID'sini bul
+      const coincapId = this.coincapIdMap[asset] || asset.toLowerCase();
       
-      let coinResponse;
-      let useCoincap = this.preferCoincap; // Tercih edilen API'yi kullan
+      // CoinCap'den veri al (API key ile)
+      const coincapUrl = `${this.coincapBaseUrl}/assets/${coincapId}`;
       
-      if (useCoincap) {
-        try {
-          // Önce CoinCap'i dene (artık tercih edilen kaynak)
-          const coincapId = asset.toLowerCase();
-          const coincapUrl = `${this.coincapBaseUrl}/assets/${coincapId}`;
-          
-          coinResponse = await this.throttledRequest('coincap', async () => {
-            return await axios.get(coincapUrl);
-          });
-        } catch (error) {
-          // CoinCap hata verirse CoinGecko'ya geç
-          logger.warn(`CoinCap API error for whale transactions ${asset}, falling back to CoinGecko: ${error.message}`);
-          useCoincap = false;
-          
-          // CoinGecko'yu dene
-          const coinDataUrl = `${this.coingeckoBaseUrl}/coins/${coinId}`;
-          coinResponse = await this.throttledRequest('coingecko', async () => {
-            return await axios.get(coinDataUrl, {
-              params: {
-                localization: false,
-                tickers: true,
-                market_data: true,
-                community_data: false,
-                developer_data: false,
-                sparkline: false
-              }
-            });
-          });
-        }
-      } else {
-        try {
-          // CoinGecko'yu dene
-          const coinDataUrl = `${this.coingeckoBaseUrl}/coins/${coinId}`;
-          coinResponse = await this.throttledRequest('coingecko', async () => {
-            return await axios.get(coinDataUrl, {
-              params: {
-                localization: false,
-                tickers: true,
-                market_data: true,
-                community_data: false,
-                developer_data: false,
-                sparkline: false
-              }
-            });
-          });
-        } catch (error) {
-          // CoinGecko hata verirse CoinCap'e geç
-          logger.warn(`CoinGecko API error for whale transactions ${asset}, falling back to CoinCap: ${error.message}`);
-          useCoincap = true;
-          
-          // CoinCap'i dene
-          const coincapId = asset.toLowerCase();
-          const coincapUrl = `${this.coincapBaseUrl}/assets/${coincapId}`;
-          
-          coinResponse = await this.throttledRequest('coincap', async () => {
-            return await axios.get(coincapUrl);
-          });
-        }
-      }
+      const coinResponse = await this.throttledRequest('coincap', async (params) => {
+        return await axios.get(coincapUrl, { params });
+      });
       
       // Binance'den büyük işlem verileri (son 24 saat)
       const symbol = asset + 'USDT';
@@ -271,16 +211,9 @@ class OnchainMetricsService {
         });
       });
       
-      // Toplam işlem hacmi
-      let totalVolume, marketCap;
-      
-      if (useCoincap) {
-        totalVolume = parseFloat(coinResponse.data.data?.volumeUsd24Hr || 0);
-        marketCap = parseFloat(coinResponse.data.data?.marketCapUsd || 0);
-      } else {
-        totalVolume = coinResponse.data.market_data.total_volume.usd || 0;
-        marketCap = coinResponse.data.market_data.market_cap.usd || 0;
-      }
+      // Toplam işlem hacmi ve piyasa değeri
+      const totalVolume = parseFloat(coinResponse.data.data?.volumeUsd24Hr || 0);
+      const marketCap = parseFloat(coinResponse.data.data?.marketCapUsd || 0);
       
       // Ortalama işlem boyutu
       const aggTrades = tradesResponse.data;
@@ -321,8 +254,7 @@ class OnchainMetricsService {
 
   /**
    * MVRV benzeri bir değer hesaplar - "Market Sentiment Score"
-   * CoinGecko API'sinden piyasa verilerini kullanarak bir sentiment skoru üretir
-   * Fallback olarak CoinCap API kullanır
+   * CoinCap API ve Binance verileri kullanarak bir sentiment skoru üretir
    * @param {string} asset - BTC, ETH gibi varlık kısaltması
    * @returns {number|null} - Market Sentiment Score (-4 ile +4 arasında)
    */
@@ -335,154 +267,82 @@ class OnchainMetricsService {
         return this.cache[cacheKey];
       }
       
-      // ID'yi bul
-      const coinId = this.coinIdMap[asset] || asset.toLowerCase();
+      // CoinCap ID'sini bul
+      const coincapId = this.coincapIdMap[asset] || asset.toLowerCase();
       
-      let coinResponse;
-      let useCoincap = this.preferCoincap; // Tercih edilen API'yi kullan
+      // CoinCap'den veri al (API key ile)
+      const coincapUrl = `${this.coincapBaseUrl}/assets/${coincapId}`;
       
-      if (useCoincap) {
-        try {
-          // Önce CoinCap'i dene (artık tercih edilen kaynak)
-          const coincapId = asset.toLowerCase();
-          const coincapUrl = `${this.coincapBaseUrl}/assets/${coincapId}`;
-          
-          coinResponse = await this.throttledRequest('coincap', async () => {
-            return await axios.get(coincapUrl);
-          });
-        } catch (error) {
-          // CoinCap hata verirse CoinGecko'ya geç
-          logger.warn(`CoinCap API error for ${asset}, falling back to CoinGecko: ${error.message}`);
-          useCoincap = false;
-          
-          // CoinGecko'yu dene
-          const coinDataUrl = `${this.coingeckoBaseUrl}/coins/${coinId}`;
-          coinResponse = await this.throttledRequest('coingecko', async () => {
-            return await axios.get(coinDataUrl, {
-              params: {
-                localization: false,
-                tickers: false,
-                market_data: true,
-                community_data: true,
-                developer_data: false,
-                sparkline: false
-              }
-            });
-          });
-        }
-      } else {
-        try {
-          // CoinGecko'yu dene
-          const coinDataUrl = `${this.coingeckoBaseUrl}/coins/${coinId}`;
-          coinResponse = await this.throttledRequest('coingecko', async () => {
-            return await axios.get(coinDataUrl, {
-              params: {
-                localization: false,
-                tickers: false,
-                market_data: true,
-                community_data: true,
-                developer_data: false,
-                sparkline: false
-              }
-            });
-          });
-        } catch (error) {
-          // CoinGecko hata verirse CoinCap'e geç
-          logger.warn(`CoinGecko API error for ${asset}, falling back to CoinCap: ${error.message}`);
-          useCoincap = true;
-          
-          // CoinCap'i dene
-          const coincapId = asset.toLowerCase();
-          const coincapUrl = `${this.coincapBaseUrl}/assets/${coincapId}`;
-          
-          coinResponse = await this.throttledRequest('coincap', async () => {
-            return await axios.get(coincapUrl);
-          });
-        }
-      }
+      const coinResponse = await this.throttledRequest('coincap', async (params) => {
+        return await axios.get(coincapUrl, { params });
+      });
       
-      let priceChange24h = 0;
-      let priceChange7d = 0;
-      let priceChange30d = 0;
-      let marketCap = 0;
-      let totalVolume = 0;
-      let ath = 0;
-      let athChangePercentage = 0;
-      let twitterFollowers = 0;
-      let redditSubscribers = 0;
-      let redditActive = 0;
+      // CoinCap API'den gelen veri formatını işle
+      const marketCap = parseFloat(coinResponse.data.data?.marketCapUsd || 0);
+      const totalVolume = parseFloat(coinResponse.data.data?.volumeUsd24Hr || 0);
+      const currentPrice = parseFloat(coinResponse.data.data?.priceUsd || 0);
       
-      if (useCoincap) {
-        // CoinCap API'den gelen veri formatını işle
-        marketCap = parseFloat(coinResponse.data.data?.marketCapUsd || 0);
-        totalVolume = parseFloat(coinResponse.data.data?.volumeUsd24Hr || 0);
-        
-        // CoinCap API'de doğrudan yüzde değişimler olmayabilir, 
-        // burada sınırlı veri ile çalışıyoruz
-        priceChange24h = parseFloat(coinResponse.data.data?.changePercent24Hr || 0);
-        
-        // Diğer bilgiler CoinCap'te yoksa, makul tahminler kullan
-        priceChange7d = priceChange24h * 0.7; // 24 saatlik değişimin %70'i
-        priceChange30d = priceChange24h * 0.3; // 24 saatlik değişimin %30'u
-        
-        // CoinCap'te ATH bilgisi yok, güncel fiyatı ATH olarak varsay
-        ath = parseFloat(coinResponse.data.data?.priceUsd || 0);
-        athChangePercentage = 0;
-        
-        // Sosyal metrikler CoinCap'te yok
-        twitterFollowers = 0;
-        redditSubscribers = 0;
-        redditActive = 0;
-      } else {
-        // CoinGecko API'den gelen veri formatını işle
-        priceChange24h = coinResponse.data.market_data.price_change_percentage_24h || 0;
-        priceChange7d = coinResponse.data.market_data.price_change_percentage_7d || 0;
-        priceChange30d = coinResponse.data.market_data.price_change_percentage_30d || 0;
-        
-        // Piyasa göstergeleri
-        marketCap = coinResponse.data.market_data.market_cap.usd || 0;
-        totalVolume = coinResponse.data.market_data.total_volume.usd || 0;
-        ath = coinResponse.data.market_data.ath.usd || 0;
-        athChangePercentage = coinResponse.data.market_data.ath_change_percentage.usd || 0;
-        
-        // Twitter ve Reddit metrikleri
-        twitterFollowers = coinResponse.data.community_data?.twitter_followers || 0;
-        redditSubscribers = coinResponse.data.community_data?.reddit_subscribers || 0;
-        redditActive = coinResponse.data.community_data?.reddit_accounts_active_48h || 0;
-      }
+      // CoinCap API'den yüzde değişim verisi
+      const priceChange24h = parseFloat(coinResponse.data.data?.changePercent24Hr || 0);
       
+      // Diğer bilgiler CoinCap'te yoksa, sınırlı veriden tahmin yürüt
+      const priceChange7d = priceChange24h * 0.7; // 24 saatlik değişimin %70'i
+      const priceChange30d = priceChange24h * 0.3; // 24 saatlik değişimin %30'u
+      
+      // ATH verisi için şu anki fiyatı baz al
+      const ath = currentPrice;
+      const athChangePercentage = 0;
+      
+      // Piyasa değeri / Hacim oranı
       const volumeToMarketCapRatio = totalVolume / marketCap;
       
-      // Sosyal duyarlılık skoru (0-1 arası)
-      let socialSentiment = 0;
-      if (twitterFollowers > 0 && redditSubscribers > 0) {
-        const redditActivity = redditActive / redditSubscribers; // Aktif kullanıcı oranı
-        socialSentiment = redditActivity * 0.8; // Reddit aktivitesi 0-1 arasında normalize edildi
-      }
+      // Binance API kullanarak ek veri toplayabiliriz
+      // Örneğin son işlemleri analiz ederek sosyal metriklerin yerini tutacak veriler
+      
+      // Binance'den fiyat ve hacim verilerini al (sosyal metrikler yerine)
+      const symbol = asset + 'USDT';
+      const binanceSymbolUrl = `${this.binanceBaseUrl}/ticker/24hr`;
+      const binanceData = await this.throttledRequest('binance', async () => {
+        return await axios.get(binanceSymbolUrl, {
+          params: { symbol }
+        });
+      });
+      
+      // Binance verilerinden sosyal sentiment tahmin et
+      const priceChangePercent = parseFloat(binanceData.data.priceChangePercent || 0);
+      const quoteVolume = parseFloat(binanceData.data.quoteVolume || 0);
+      const count = parseInt(binanceData.data.count || 0); // İşlem sayısı
+      
+      // İşlem sayısı ve hacim ilişkisi (yüksek işlem sayısı ve düşük ortalama işlem hacmi = perakende ilgisi)
+      const avgTradeSize = quoteVolume / count;
+      const normalizedTradeSize = Math.min(1, Math.max(0, 1 - (avgTradeSize / 50000))); // Normalize et
+      
+      // Yapay sosyal sentiment skoru: işlem sayısı ve ortalama işlem büyüklüğünden hesapla
+      const socialSentiment = normalizedTradeSize * 0.8;
       
       // Fiyat trendi skoru (-1 ile +1 arası)
-      // Kısa vadeli trende daha fazla ağırlık ver
+      // CoinCap ve Binance verilerini birleştir
       const trendScore = (
-        priceChange24h * 0.5 + 
+        (priceChange24h + priceChangePercent) * 0.25 + // Her iki kaynaktan 24h değişimi
         priceChange7d * 0.3 + 
         priceChange30d * 0.2
       ) / 100; // -1 ile +1 arasına normalize et
-      
-      // ATH'dan uzaklık skoru (-1 ile +1 arası)
-      // ATH'ya yakınsa negatif (aşırı alım), uzaksa pozitif (potansiyel alım)
-      const athDistanceScore = (Math.min(0, athChangePercentage) / -100); // 0 ile +1 arası
       
       // Hacim analizi (-1 ile +1 arası)
       // Yüksek hacim/marketcap oranı pozitif, düşük negatif
       const volumeScore = Math.min(1, Math.max(-1, (volumeToMarketCapRatio * 10) - 0.5));
       
+      // Rank puanı - CoinCap rank verisini kullan
+      const rank = parseInt(coinResponse.data.data?.rank || 99);
+      const rankScore = Math.max(0, Math.min(0.5, (100 - rank) / 100));
+      
       // Tüm skorları birleştir
       const sentimentScore = (
         trendScore * 1.5 +      // Trend en önemli faktör
-        athDistanceScore * 1.0 + // ATH'dan uzaklık orta derece önemli
-        volumeScore * 1.0 +      // Hacim orta derece önemli 
-        socialSentiment * 0.5    // Sosyal metrikler en az önemli
-      ) / 4;                     // -1 ile +1 arasına normalize et
+        volumeScore * 1.2 +     // Hacim önemli
+        socialSentiment * 0.8 + // İşlem metrics 
+        rankScore * 0.5         // Coin rank puanı
+      ) / 4;                    // -1 ile +1 arasına normalize et
       
       // -4 ile +4 arasına ölçeklendir (Z-score benzeri bir ölçek)
       const finalScore = sentimentScore * 4;
@@ -502,7 +362,7 @@ class OnchainMetricsService {
 
   /**
    * NVT Benzeri bir gösterge hesaplar - "Aktivite-Değer Oranı"
-   * CoinGecko ve Binance verilerini kullanarak bir aktivite-değer analizi yapar
+   * CoinCap ve Binance verilerini kullanarak bir aktivite-değer analizi yapar
    * @param {string} asset - BTC, ETH gibi varlık kısaltması
    * @returns {number|null} - NVT benzeri oran (yüksek değerler aşırı değerlenmiş gösterir)
    */
@@ -515,67 +375,15 @@ class OnchainMetricsService {
         return this.cache[cacheKey];
       }
       
-      // ID'yi bul
-      const coinId = this.coinIdMap[asset] || asset.toLowerCase();
+      // CoinCap ID'sini bul
+      const coincapId = this.coincapIdMap[asset] || asset.toLowerCase();
       
-      let coinResponse;
-      let useCoincap = this.preferCoincap; // Tercih edilen API'yi kullan
+      // CoinCap'den veri al (API key ile)
+      const coincapUrl = `${this.coincapBaseUrl}/assets/${coincapId}`;
       
-      if (useCoincap) {
-        try {
-          // Önce CoinCap'i dene (artık tercih edilen kaynak)
-          const coincapId = asset.toLowerCase();
-          const coincapUrl = `${this.coincapBaseUrl}/assets/${coincapId}`;
-          
-          coinResponse = await this.throttledRequest('coincap', async () => {
-            return await axios.get(coincapUrl);
-          });
-        } catch (error) {
-          // CoinCap hata verirse CoinGecko'ya geç
-          logger.warn(`CoinCap API error for NVT ${asset}, falling back to CoinGecko: ${error.message}`);
-          useCoincap = false;
-          
-          // CoinGecko'yu dene
-          const coinDataUrl = `${this.coingeckoBaseUrl}/coins/${coinId}`;
-          coinResponse = await this.throttledRequest('coingecko', async () => {
-            return await axios.get(coinDataUrl, {
-              params: {
-                localization: false,
-                market_data: true,
-                developer_data: false,
-                sparkline: false
-              }
-            });
-          });
-        }
-      } else {
-        try {
-          // CoinGecko'yu dene
-          const coinDataUrl = `${this.coingeckoBaseUrl}/coins/${coinId}`;
-          coinResponse = await this.throttledRequest('coingecko', async () => {
-            return await axios.get(coinDataUrl, {
-              params: {
-                localization: false,
-                market_data: true,
-                developer_data: false,
-                sparkline: false
-              }
-            });
-          });
-        } catch (error) {
-          // CoinGecko hata verirse CoinCap'e geç
-          logger.warn(`CoinGecko API error for NVT ${asset}, falling back to CoinCap: ${error.message}`);
-          useCoincap = true;
-          
-          // CoinCap'i dene
-          const coincapId = asset.toLowerCase();
-          const coincapUrl = `${this.coincapBaseUrl}/assets/${coincapId}`;
-          
-          coinResponse = await this.throttledRequest('coincap', async () => {
-            return await axios.get(coincapUrl);
-          });
-        }
-      }
+      const coinResponse = await this.throttledRequest('coincap', async (params) => {
+        return await axios.get(coincapUrl, { params });
+      });
       
       // Binance'den 24 saatlik istatistikler
       const symbol = asset + 'USDT';
@@ -589,13 +397,7 @@ class OnchainMetricsService {
       });
       
       // Ağ değeri (market cap) ve işlem hacmi
-      let marketCap;
-      
-      if (useCoincap) {
-        marketCap = parseFloat(coinResponse.data.data?.marketCapUsd || 0);
-      } else {
-        marketCap = coinResponse.data.market_data.market_cap.usd || 0;
-      }
+      const marketCap = parseFloat(coinResponse.data.data?.marketCapUsd || 0);
       const tradingVolume = parseFloat(tickerResponse.data.quoteVolume) || 0;
       
       // NVT benzeri oran hesapla
@@ -766,7 +568,8 @@ class OnchainMetricsService {
 
   /**
    * API isteği gönderme işlemini rate limit'e uygun olarak yönetir
-   * @param {string} apiName - API adı ('coingecko', 'coincap' veya 'binance')
+   * API key'leri gerektiğinde ekler ve kredi kullanımını izler
+   * @param {string} apiName - API adı ('coincap' veya 'binance')
    * @param {Function} requestFunc - API isteğini yapacak async fonksiyon
    * @param {number} retryCount - Yeniden deneme sayısı (iç kullanım için)
    * @returns {Promise<any>} - API isteğinin sonucu
@@ -793,6 +596,33 @@ class OnchainMetricsService {
       
       // İstek zamanını güncelle
       this.lastRequestTime[apiName] = Date.now();
+      
+      // API çağrı sayısını artır (sadece CoinCap için)
+      if (apiName === 'coincap') {
+        this.apiCallCount.coincap++;
+        if (this.apiCallCount.coincap % 10 === 0) {
+          logger.info(`CoinCap API call count: ${this.apiCallCount.coincap} (monthly limit: 2500)`);
+        }
+      }
+      
+      // CoinCap için özel API key işleme
+      if (apiName === 'coincap') {
+        // İşler bu noktadan CoinCap API için biraz karmaşıktır
+        // CoinCap API bir URL parametresi olarak API key beklediği için
+        // fonksiyonu özel bir işlemden geçirmemiz gerekiyor
+        
+        // Orijinal URL'yi alın ve API key'i ekleyin
+        const originalRequestFunc = requestFunc;
+        requestFunc = async () => {
+          try {
+            const params = { apiKey: this.coincapApiKey };
+            const response = await originalRequestFunc(params);
+            return response;
+          } catch (error) {
+            throw error;
+          }
+        };
+      }
       
       // İsteği yap
       return await requestFunc();
