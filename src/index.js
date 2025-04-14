@@ -1,4 +1,3 @@
-const positionManager = require('./services/PositionManager');
 const logger = require('./utils/logger');
 const BinanceService = require('./services/BinanceService');
 const OrderService = require('./services/OrderService');
@@ -8,12 +7,14 @@ const PerformanceTracker = require('./services/PerformanceTracker');
 const RLPositionManager = require('./services/RLPositionManager');
 const RLModelService = require('./services/RLModelService');
 const RLSupportResistanceStrategy = require('./strategies/RLSupportResistanceStrategy');
+const EnhancedPositionManager = require('./services/EnhancedPositionManager');
 const config = require('./config/config');
 const { Telegraf } = require('telegraf');
 const dotenv = require("dotenv");
 const express = require('express');
 const path = require('path');
-const { Position } = require('./db/db').models;
+const { models } = require('./db/db');
+const { Position } = models;
 
 // Track services
 let rlBot = null;
@@ -111,23 +112,39 @@ Active RL Positions: ${activePositions}
     });
     
     // Initialize services
+    logger.info('Initializing services...', { timestamp: new Date().toISOString() });
+    
+    // 1. Binance servisi
     const binanceService = new BinanceService();
     await binanceService.initialize();
-
-    const orderService = new OrderService(binanceService);
+    logger.info('Binance Service initialized', { timestamp: new Date().toISOString() });
     
-    // Initialize MultiTimeframeService
+    // 2. Order servisi
+    const orderService = new OrderService(binanceService);
+    logger.info('Order Service initialized', { timestamp: new Date().toISOString() });
+    
+    // 3. Multi-timeframe servisi
     const mtfService = new MultiTimeframeService(binanceService);
     await mtfService.initialize();
+    logger.info('Multi-Timeframe Service initialized', { timestamp: new Date().toISOString() });
     
-    // Initialize PerformanceTracker
+    // 4. Initialize PerformanceTracker
     const performanceTracker = new PerformanceTracker();
     await performanceTracker.initialize();
+    logger.info('Performance Tracker initialized', { timestamp: new Date().toISOString() });
     
-    // Create MarketScanner with all required services
+    // 5. Position manager
+    await EnhancedPositionManager.initialize();
+    logger.info('Enhanced Position Manager initialized', { timestamp: new Date().toISOString() });
+    
+    // 6. Create MarketScanner with all required services
     const marketScanner = new MarketScanner(binanceService, orderService, mtfService, performanceTracker);
-    await marketScanner.strategy.initialize();
     await marketScanner.initialize();
+    logger.info('Market Scanner initialized', { timestamp: new Date().toISOString() });
+    
+    // Strateji bilgisini logla
+    const activeStrategy = config.activeStrategy || 'TurtleTradingStrategy';
+    logger.info(`Active strategy: ${activeStrategy}`, { timestamp: new Date().toISOString() });
     
     // Initialize RL Model Service
     const rlModelService = new RLModelService();
@@ -301,25 +318,27 @@ Active RL Positions: ${activePositions}
     // Döngü ile işlemleri sırayla çalıştır
     while (true) {
       try {
-        // Pozisyon yönetimini başlat
-        logger.info('Starting PositionManager...');
-        await positionManager();
-        logger.info('PositionManager completed.');
-
+        // EnhancedPositionManager zaten kendi periyodik döngüsünü yönetiyor
+        // burada tekrar çağırmamıza gerek yok
+        
         // Market taramasını başlat
         logger.info('Starting MarketScanner...');
-        await marketScanner.scanAllSymbols();
-        logger.info('MarketScanner completed.');
-
+        
+        // Config'de tanımlanan sembolleri tara
+        await marketScanner.scanConfigSymbols();
+        logger.info('MarketScanner completed scanning config symbols.');
+        
         // Weak signals flushing
         await marketScanner.flushWeakSignalBuffer();
 
-        // 1 dakika bekleme
-        logger.info('Waiting for 1 minute before restarting the cycle...');
-        await new Promise(resolve => setTimeout(resolve, 60 * 1000));
+        // Bekleme süresi
+        const waitTime = config.marketScanInterval || 60 * 1000; // Default 1 dakika
+        logger.info(`Waiting for ${waitTime/1000} seconds before next scan...`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
       } catch (error) {
         logger.error('Error in main loop:', error);
-        // Döngü devam etsin, bir sonraki iterasyon başlasın
+        // Hata durumunda 30 saniye bekle ve devam et
+        await new Promise(resolve => setTimeout(resolve, 30 * 1000));
       }
     }
   } catch (error) {
