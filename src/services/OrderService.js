@@ -387,29 +387,28 @@ class OrderService {
       // Eğer quantity null, undefined, 0 veya NaN ise, pozisyon miktarını Binance'dan al
       let actualQuantity = quantity;
       let actualPositionSide = positionSide;
+      let position = null;
       
-      if (!quantity || isNaN(quantity) || quantity === 0) {
-        logger.info(`No quantity provided for ${symbol}, fetching position size from Binance`);
-        
-        // Pozisyon miktarını Binance'dan al
-        const positions = await this.binanceService.getOpenPositions();
-        const position = positions.find(p => p.symbol === symbol);
-        
-        if (!position || Math.abs(parseFloat(position.positionAmt)) === 0) {
-          logger.warn(`No open position found on Binance for ${symbol}`);
-          return false;
-        }
-        
-        // Pozisyon miktarının mutlak değerini al (positionAmt negative for SHORT positions)
-        actualQuantity = Math.abs(parseFloat(position.positionAmt));
-        logger.info(`Found position size from Binance for ${symbol}: ${actualQuantity}`);
-        
-        // Binance'dan gelen pozisyon tarafını kullan (daha güvenilir)
-        if (position.positionSide) {
-          actualPositionSide = position.positionSide;
-          logger.info(`Using position side from Binance: ${actualPositionSide}`);
-        }
+      // Pozisyon bilgilerini Binance'dan al
+      const positions = await this.binanceService.getOpenPositions();
+      position = positions.find(p => p.symbol === symbol);
+      
+      if (!position || Math.abs(parseFloat(position.positionAmt)) === 0) {
+        logger.warn(`No open position found on Binance for ${symbol}`);
+        return false;
       }
+      
+      // Pozisyon miktarının mutlak değerini al (positionAmt negative for SHORT positions)
+      actualQuantity = Math.abs(parseFloat(position.positionAmt));
+      logger.info(`Found position size from Binance for ${symbol}: ${actualQuantity}`);
+      
+      // Binance'dan gelen pozisyon tarafını kullan (daha güvenilir)
+      actualPositionSide = position.positionSide;
+      logger.info(`Using position side from Binance: ${actualPositionSide}`);
+      
+      // Eğer pozisyon yönü 'BOTH' ise, o zaman positionSide parametresini kullanma
+      // Binance One-Way modunda tüm pozisyonlar 'BOTH' olarak işaretlenir
+      const isOneWayMode = actualPositionSide === 'BOTH';
       
       // Eğer hala geçersiz miktar varsa, işlemi durdur
       if (!actualQuantity || isNaN(actualQuantity) || actualQuantity === 0) {
@@ -428,7 +427,7 @@ class OrderService {
         ? adjustedQuantity.toFixed(precision) 
         : adjustedQuantity.toString();
       
-      logger.info(`Closing position for ${symbol}: Side: ${side}, Quantity: ${finalQuantity}, Position Side: ${actualPositionSide}`);
+      logger.info(`Closing position for ${symbol}: Side: ${side}, Quantity: ${finalQuantity}, Position Side: ${actualPositionSide}, One-Way Mode: ${isOneWayMode}`);
       
       const notional = parseFloat(finalQuantity) * currentPrice;
       if (notional < 5) {
@@ -436,12 +435,22 @@ class OrderService {
         return false; // İşlem yapmadan çık
       }
 
-      return await this.binanceService.placeMarketOrder({
-        symbol,
-        side,
-        quantity: finalQuantity,
-        positionSide: actualPositionSide
-      });
+      // Eğer One-Way modundaysa, positionSide parametresini gönderme
+      if (isOneWayMode) {
+        return await this.binanceService.placeMarketOrder({
+          symbol,
+          side,
+          quantity: finalQuantity
+        });
+      } else {
+        // Hedge modunda, positionSide'ı da gönder
+        return await this.binanceService.placeMarketOrder({
+          symbol,
+          side,
+          quantity: finalQuantity,
+          positionSide: actualPositionSide
+        });
+      }
     } catch (error) {
       logger.error(`Error closing position for ${symbol}:`, error);
       throw error;

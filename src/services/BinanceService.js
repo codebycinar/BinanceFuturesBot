@@ -28,21 +28,51 @@ class BinanceService {
   }
 
   /**
-   * Check current position mode and set it if needed
-   * NOT: Bu fonksiyon şu anda uygulanabilir değil, Binance API kütüphanesinde ilgili metotlar bulunmuyor
-   * Position modu değişikliği için Binance web arayüzünü kullanın
+   * Check current position mode and set it in the config
+   * Binance API'sinden pozisyon modunu alır ve config'i günceller
    */
   async checkAndSetPositionMode() {
     try {
-      // Uygun API metotları olmadığı için bu işlemi kaldırıyoruz
-      // Position Side Mode'u web arayüzünden manuel olarak yapılandırın
-
-      logger.info(`Using position mode: ${this.positionSideMode}. Please ensure this matches your Binance account settings.`);
-
-      // Not: Güncel binance-api-node kütüphanesinde 
-      // futuresPositionMode ve futuresChangePositionMode metotları bulunmuyor
+      // Pozisyon modunu doğrudan Binance API'sinden alalım
+      const timestamp = Date.now();
+      const queryString = `timestamp=${timestamp}`;
+      
+      // Binance API'si için HMAC-SHA256 imzası oluştur
+      const signature = require('crypto')
+        .createHmac('sha256', config.apiSecret)
+        .update(queryString)
+        .digest('hex');
+      
+      // Pozisyon modunu sorgula
+      const url = `https://fapi.binance.com/fapi/v1/positionSide/dual?${queryString}&signature=${signature}`;
+      
+      try {
+        const response = await axios({
+          method: 'GET',
+          url: url,
+          headers: { 'X-MBX-APIKEY': config.apiKey }
+        });
+        
+        // API yanıtını işle
+        const dualSidePosition = response.data.dualSidePosition;
+        
+        // Pozisyon modunu belirle (true = Hedge Mode, false = One-Way Mode)
+        this.positionSideMode = dualSidePosition ? 'Hedge' : 'One-Way';
+        
+        // Config'i güncelle
+        config.positionSideMode = this.positionSideMode;
+        
+        logger.info(`Detected account position mode from Binance: ${this.positionSideMode}`);
+      } catch (apiError) {
+        logger.error(`Error fetching position mode from Binance: ${apiError.message}`);
+        if (apiError.response) {
+          logger.error(`API response: ${JSON.stringify(apiError.response.data)}`);
+        }
+        logger.info(`Using configured position mode: ${this.positionSideMode}. Please ensure this matches your Binance account settings.`);
+      }
     } catch (error) {
       logger.error('Error checking position mode:', error);
+      logger.info(`Using configured position mode: ${this.positionSideMode}. Please ensure this matches your Binance account settings.`);
     }
   }
 
@@ -173,22 +203,31 @@ class BinanceService {
         timestamp
       });
       
-      // Add positionSide parameter only if in Hedge Mode
-      if (isHedgeMode && positionSide) {
-        // Validate and normalize positionSide value
-        let normalizedPositionSide = positionSide;
-        
-        // Binance API only accepts LONG, SHORT or BOTH as positionSide values
-        if (!['LONG', 'SHORT', 'BOTH'].includes(normalizedPositionSide)) {
-          // Default to BOTH if invalid value
-          logger.warn(`Invalid positionSide value: ${normalizedPositionSide}, defaulting to 'BOTH'`);
-          normalizedPositionSide = 'BOTH';
+      // Add positionSide parameter only if specifically provided AND in Hedge Mode
+      if (positionSide !== undefined && positionSide !== null) {
+        if (isHedgeMode) {
+          // Validate and normalize positionSide value
+          let normalizedPositionSide = positionSide;
+          
+          // Binance API only accepts LONG, SHORT or BOTH as positionSide values
+          if (!['LONG', 'SHORT', 'BOTH'].includes(normalizedPositionSide)) {
+            // Default to BOTH if invalid value
+            logger.warn(`Invalid positionSide value: ${normalizedPositionSide}, defaulting to 'BOTH'`);
+            normalizedPositionSide = 'BOTH';
+          }
+          
+          // BOTH pozisyon tarafını da Hedge modunda gönderme (One-Way benzeri davranış)
+          if (normalizedPositionSide !== 'BOTH') {
+            params.append('positionSide', normalizedPositionSide);
+            logger.info(`Adding positionSide=${normalizedPositionSide} parameter for Hedge Mode`);
+          } else {
+            logger.info(`Omitting BOTH positionSide parameter, treating like One-Way Mode`);
+          }
+        } else {
+          logger.info(`Omitting positionSide parameter for One-Way Mode, even though provided: ${positionSide}`);
         }
-        
-        params.append('positionSide', normalizedPositionSide);
-        logger.info(`Adding positionSide=${normalizedPositionSide} parameter for Hedge Mode`);
       } else {
-        logger.info(`Omitting positionSide parameter for One-Way Mode`);
+        logger.info(`No positionSide provided, omitting parameter`);
       }
       
       // Binance API'si için HMAC-SHA256 imzası oluştur
@@ -525,22 +564,31 @@ class BinanceService {
         quantity: adjustedQuantity
       };
       
-      // Add positionSide only if in Hedge Mode
-      if (isHedgeMode && position.positionSide) {
-        // Validate and normalize positionSide value
-        let normalizedPositionSide = position.positionSide;
-        
-        // Binance API only accepts LONG, SHORT or BOTH as positionSide values
-        if (!['LONG', 'SHORT', 'BOTH'].includes(normalizedPositionSide)) {
-          // Default to BOTH if invalid value
-          logger.warn(`Invalid positionSide value: ${normalizedPositionSide}, defaulting to 'BOTH'`);
-          normalizedPositionSide = 'BOTH';
+      // Check if position has a positionSide field and it's not BOTH
+      if (position.positionSide && position.positionSide !== 'BOTH') {
+        if (isHedgeMode) {
+          // Validate and normalize positionSide value
+          let normalizedPositionSide = position.positionSide;
+          
+          // Binance API only accepts LONG, SHORT or BOTH as positionSide values
+          if (!['LONG', 'SHORT', 'BOTH'].includes(normalizedPositionSide)) {
+            // Default to BOTH if invalid value
+            logger.warn(`Invalid positionSide value: ${normalizedPositionSide}, defaulting to 'BOTH'`);
+            normalizedPositionSide = 'BOTH';
+          }
+          
+          // Eğer pozisyon tarafı 'BOTH' değilse, positionSide parametresini ekle
+          if (normalizedPositionSide !== 'BOTH') {
+            orderData.positionSide = normalizedPositionSide;
+            logger.info(`Adding positionSide=${normalizedPositionSide} for Close Position in Hedge Mode`);
+          } else {
+            logger.info(`Omitting BOTH positionSide for Close Position`);
+          }
+        } else {
+          logger.info(`Account is in One-Way Mode, omitting positionSide=${position.positionSide}`);
         }
-        
-        orderData.positionSide = normalizedPositionSide;
-        logger.info(`Adding positionSide=${normalizedPositionSide} for Close Position in Hedge Mode`);
       } else {
-        logger.info(`Omitting positionSide for Close Position in One-Way Mode`);
+        logger.info(`Position doesn't have positionSide or it's BOTH, omitting parameter`);
       }
       
       // Satış işlemini gerçekleştir
@@ -907,12 +955,17 @@ class BinanceService {
   * Aynı isimli iki metot olduğu için bu fonksiyon kaldırıldı ve yukarıdaki metot kullanılmaktadır.
   */
   /**
-   * Initialize fonksiyonu (eğer gerekiyorsa)
+   * Initialize fonksiyonu
    */
   async initialize() {
     try {
+      // Exchange bilgilerini al
       await this.fetchExchangeInfo();
       logger.info('BinanceService initialized with exchange info.');
+      
+      // Pozisyon modunu kontrol et ve ayarla
+      await this.checkAndSetPositionMode();
+      logger.info(`BinanceService using position mode: ${this.positionSideMode}`);
     } catch (error) {
       logger.error('Error initializing BinanceService:', error.message);
       throw error;
