@@ -14,6 +14,9 @@ class TelegramService {
             return TelegramService.instance;
         }
 
+        // Flag to allow the app to proceed if Telegram is not available
+        this.fallbackMode = false;
+
         // Initialize bot if token exists
         if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
             try {
@@ -26,18 +29,31 @@ class TelegramService {
                 logger.error(`Error creating Telegram bot: ${error.message}`);
                 this.bot = null;
                 this.isInitialized = false;
+                this.fallbackMode = true;
             }
         } else {
             logger.warn('Missing Telegram bot token or chat ID. Telegram notifications disabled.');
             this.bot = null;
             this.isInitialized = false;
+            this.fallbackMode = true;
         }
 
         TelegramService.instance = this;
     }
 
     async initialize() {
-        if (!this.bot || this.isInitialized) {
+        // Already initialized or in fallback mode
+        if (this.isInitialized || this.fallbackMode) {
+            logger.info('Telegram service already initialized or in fallback mode');
+            this.isInitialized = true;
+            return;
+        }
+
+        // No bot instance available
+        if (!this.bot) {
+            logger.warn('No Telegram bot instance available, entering fallback mode');
+            this.isInitialized = true;
+            this.fallbackMode = true;
             return;
         }
 
@@ -68,31 +84,60 @@ Available commands:
                 });
             });
 
-            // Bot launch
-            await this.bot.launch();
+            // Bot launch with timeout
+            const launchPromise = this.bot.launch();
+            const timeoutPromise = new Promise((_, reject) => 
+                setTimeout(() => reject(new Error('Telegram bot launch timeout after 5 seconds')), 5000)
+            );
+            
+            await Promise.race([launchPromise, timeoutPromise])
+                .catch(error => {
+                    logger.warn(`Telegram bot launch timed out or failed: ${error.message}. Continuing without Telegram.`);
+                    this.bot = null;
+                    this.fallbackMode = true;
+                });
+                
             this.isInitialized = true;
-            logger.info('Telegram bot started successfully');
+            logger.info('Telegram service initialization completed');
 
-            // Send startup message
-            this.sendMessage('Binance Futures Bot started! 🚀');
+            // Send startup message (only if bot successfully launched)
+            if (this.bot) {
+                this.sendMessage('Binance Futures Bot started! 🚀')
+                    .catch(err => logger.warn(`Could not send initial message: ${err.message}`));
+            }
         } catch (error) {
             logger.error(`Error initializing Telegram bot: ${error.message}`);
-            this.isInitialized = false;
+            this.isInitialized = true;
+            this.fallbackMode = true;
+            this.bot = null;
         }
     }
 
     isReady() {
-        return this.bot && this.isInitialized;
+        return (this.bot && this.isInitialized) || this.fallbackMode;
     }
 
     async sendMessage(message) {
-        if (!this.isReady()) {
+        // If in fallback mode, log the message but don't try to send
+        if (this.fallbackMode) {
+            logger.info(`[TELEGRAM MESSAGE]: ${message}`);
+            return true;
+        }
+
+        // If bot not ready and not in fallback mode
+        if (!this.bot || !this.isInitialized) {
             logger.warn('Telegram bot not ready. Message not sent:', message);
             return false;
         }
 
         try {
-            await this.bot.telegram.sendMessage(this.chatId, message);
+            // Add timeout to prevent hanging
+            const sendPromise = this.bot.telegram.sendMessage(this.chatId, message);
+            const timeoutPromise = new Promise((_, reject) => 
+                setTimeout(() => reject(new Error('Telegram sendMessage timeout after 3 seconds')), 3000)
+            );
+            
+            await Promise.race([sendPromise, timeoutPromise]);
             return true;
         } catch (error) {
             logger.error(`Error sending Telegram message: ${error.message}`);
@@ -205,6 +250,11 @@ ${reason ? `Note: ${reason}` : ''}
 
     // Stop the bot
     async stop() {
+        if (this.fallbackMode) {
+            logger.info('Telegram service in fallback mode, no bot to stop');
+            return true;
+        }
+
         if (this.bot && this.isInitialized) {
             try {
                 await this.bot.stop();
@@ -221,7 +271,10 @@ ${reason ? `Note: ${reason}` : ''}
 
     // Add custom command
     addCommand(command, handler) {
-        if (!this.bot) return false;
+        if (!this.bot || this.fallbackMode) {
+            logger.warn(`Cannot add command '${command}' - bot not available or in fallback mode`);
+            return false;
+        }
         
         try {
             this.bot.command(command, handler);
@@ -234,6 +287,11 @@ ${reason ? `Note: ${reason}` : ''}
     
     // Add text message handler
     addTextHandler(handler) {
+        if (this.fallbackMode) {
+            logger.warn('Cannot add text handler - service in fallback mode');
+            return false;
+        }
+
         if (typeof handler !== 'function') {
             logger.error('Invalid text handler: handler must be a function');
             return false;
@@ -245,7 +303,7 @@ ${reason ? `Note: ${reason}` : ''}
     
     // Process text message for all handlers
     async handleTextMessage(ctx) {
-        if (!this.isReady() || !ctx) return false;
+        if (this.fallbackMode || !this.isReady() || !ctx) return false;
         
         for (const handler of this.textHandlers) {
             try {
