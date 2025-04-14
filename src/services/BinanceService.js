@@ -175,8 +175,18 @@ class BinanceService {
       
       // Add positionSide parameter only if in Hedge Mode
       if (isHedgeMode && positionSide) {
-        params.append('positionSide', positionSide);
-        logger.info(`Adding positionSide=${positionSide} parameter for Hedge Mode`);
+        // Validate and normalize positionSide value
+        let normalizedPositionSide = positionSide;
+        
+        // Binance API only accepts LONG, SHORT or BOTH as positionSide values
+        if (!['LONG', 'SHORT', 'BOTH'].includes(normalizedPositionSide)) {
+          // Default to BOTH if invalid value
+          logger.warn(`Invalid positionSide value: ${normalizedPositionSide}, defaulting to 'BOTH'`);
+          normalizedPositionSide = 'BOTH';
+        }
+        
+        params.append('positionSide', normalizedPositionSide);
+        logger.info(`Adding positionSide=${normalizedPositionSide} parameter for Hedge Mode`);
       } else {
         logger.info(`Omitting positionSide parameter for One-Way Mode`);
       }
@@ -517,8 +527,18 @@ class BinanceService {
       
       // Add positionSide only if in Hedge Mode
       if (isHedgeMode && position.positionSide) {
-        orderData.positionSide = position.positionSide;
-        logger.info(`Adding positionSide=${position.positionSide} for Close Position in Hedge Mode`);
+        // Validate and normalize positionSide value
+        let normalizedPositionSide = position.positionSide;
+        
+        // Binance API only accepts LONG, SHORT or BOTH as positionSide values
+        if (!['LONG', 'SHORT', 'BOTH'].includes(normalizedPositionSide)) {
+          // Default to BOTH if invalid value
+          logger.warn(`Invalid positionSide value: ${normalizedPositionSide}, defaulting to 'BOTH'`);
+          normalizedPositionSide = 'BOTH';
+        }
+        
+        orderData.positionSide = normalizedPositionSide;
+        logger.info(`Adding positionSide=${normalizedPositionSide} for Close Position in Hedge Mode`);
       } else {
         logger.info(`Omitting positionSide for Close Position in One-Way Mode`);
       }

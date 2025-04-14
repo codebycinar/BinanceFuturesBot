@@ -386,6 +386,7 @@ class OrderService {
 
       // Eğer quantity null, undefined, 0 veya NaN ise, pozisyon miktarını Binance'dan al
       let actualQuantity = quantity;
+      let actualPositionSide = positionSide;
       
       if (!quantity || isNaN(quantity) || quantity === 0) {
         logger.info(`No quantity provided for ${symbol}, fetching position size from Binance`);
@@ -402,6 +403,12 @@ class OrderService {
         // Pozisyon miktarının mutlak değerini al (positionAmt negative for SHORT positions)
         actualQuantity = Math.abs(parseFloat(position.positionAmt));
         logger.info(`Found position size from Binance for ${symbol}: ${actualQuantity}`);
+        
+        // Binance'dan gelen pozisyon tarafını kullan (daha güvenilir)
+        if (position.positionSide) {
+          actualPositionSide = position.positionSide;
+          logger.info(`Using position side from Binance: ${actualPositionSide}`);
+        }
       }
       
       // Eğer hala geçersiz miktar varsa, işlemi durdur
@@ -421,7 +428,7 @@ class OrderService {
         ? adjustedQuantity.toFixed(precision) 
         : adjustedQuantity.toString();
       
-      logger.info(`Closing position for ${symbol}: Side: ${side}, Quantity: ${finalQuantity}, Position Side: ${positionSide}`);
+      logger.info(`Closing position for ${symbol}: Side: ${side}, Quantity: ${finalQuantity}, Position Side: ${actualPositionSide}`);
       
       const notional = parseFloat(finalQuantity) * currentPrice;
       if (notional < 5) {
@@ -433,7 +440,7 @@ class OrderService {
         symbol,
         side,
         quantity: finalQuantity,
-        positionSide
+        positionSide: actualPositionSide
       });
     } catch (error) {
       logger.error(`Error closing position for ${symbol}:`, error);
