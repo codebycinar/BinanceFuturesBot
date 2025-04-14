@@ -17,16 +17,39 @@ class MarketScanner {
         this.orderService = orderService;
         this.mtfService = mtfService;
         this.performanceTracker = performanceTracker;
-        this.strategy = new TurtleTradingStrategy(); // Sadece Turtle Trading Stratejisini kullan
+        
+        // Aktif stratejiyi config'den belirle
+        const activeStrategyName = config.activeStrategy || 'TurtleTradingStrategy';
+        this.initializeStrategy(activeStrategyName);
+        
         this.positionStates = {};
         this.weakSignalBuffer = []; // Zayıf sinyalleri gruplamak için buffer
         this.weakSignalBatchSize = 5; // Her mesajda kaç sinyal birleştirileceği
         this.lastMarketConditions = {}; // Market koşullarını izlemek için
     }
     
+    // Stratejiyi başlat
+    initializeStrategy(strategyName) {
+        // Strateji oluştur
+        switch (strategyName) {
+            case 'TurtleTradingStrategy':
+                this.strategy = new TurtleTradingStrategy();
+                break;
+            case 'HybridOnchainStrategy':
+                const HybridOnchainStrategy = require('../strategies/HybridOnchainStrategy');
+                this.strategy = new HybridOnchainStrategy();
+                break;
+            default:
+                logger.warn(`Unknown strategy: ${strategyName}, defaulting to TurtleTradingStrategy`);
+                this.strategy = new TurtleTradingStrategy();
+        }
+        
+        logger.info(`MarketScanner initialized with ${strategyName}`);
+    }
+    
     async initialize() {
         await this.strategy.initialize();
-        logger.info('Market Scanner initialized with Turtle Trading Strategy');
+        logger.info(`Market Scanner initialized with ${this.strategy.constructor.name}`);
     }
 
     /**

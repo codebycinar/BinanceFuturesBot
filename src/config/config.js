@@ -9,6 +9,10 @@ module.exports = {
   testnet: process.env.TESTNET === 'true', // Testnet kullanıyorsanız .env dosyasına TESTNET=true ekleyin
   positionSideMode: process.env.POSITION_SIDE_MODE || 'One-Way', // 'One-Way' veya 'Hedge'
   
+  // Onchain metrikler API anahtarları
+  glassnodeApiKey: process.env.GLASSNODE_API_KEY || 'demo',
+  cryptoQuantApiKey: process.env.CRYPTOQUANT_API_KEY || '',
+  
   // Boş bırakıldığında tüm USDT futures çiftleri taranır
   topSymbols: [],
   
@@ -18,9 +22,9 @@ module.exports = {
   // Market tarama aralığı (ms)
   marketScanInterval: 5 * 60 * 1000, // 5 dakika
   
-  // Ana strateji: TurtleTradingStrategy
-  // Aktif olarak kullanılacak strateji
-  activeStrategy: 'TurtleTradingStrategy',
+  // Ana strateji: HybridOnchainStrategy
+  // Aktif olarak kullanılacak strateji: TurtleTradingStrategy veya HybridOnchainStrategy
+  activeStrategy: 'HybridOnchainStrategy',
 
   // Strateji parametreleri 
   strategy: {
@@ -103,5 +107,31 @@ module.exports = {
   ],
   
   // RL Bot'u otomatik başlatma ayarı
-  autoStartRLBot: false
+  autoStartRLBot: false,
+  
+  // HybridOnchainStrategy parametreleri
+  hybridStrategy: {
+    // Onchain metrik parametreleri
+    enableOnchainMetrics: true,        // Onchain metrikleri etkinleştir
+    onchainConfidenceThreshold: 0.6,   // Minimum güven seviyesi
+    onchainSignalWeight: 0.4,          // Onchain sinyaller için ağırlık (0-1)
+    technicalSignalWeight: 0.6,        // Teknik analiz sinyalleri için ağırlık (0-1)
+    
+    // Temel parametreler
+    timeframe: '4h',                   // Tercih edilen zaman dilimi
+    entryChannel: 15,                  // Giriş kanalı (Turtle 20 kullanıyor, daha hızlı giriş için 15)
+    exitChannel: 10,                   // Çıkış kanalı
+    atrPeriod: 14,                     // ATR periyodu
+    
+    // Pozisyon boyutlandırma
+    maxAllocation: 30,                 // Maksimum pozisyon boyutu (USDT)
+    baseAllocation: 20,                // Temel pozisyon boyutu (USDT)
+    maxEntries: 3,                     // Maksimum pozisyon girişi
+    
+    // Risk yönetimi
+    atrMultiplier: 2.5,                // Stop loss için ATR çarpanı (Turtle'dan daha geniş)
+    profitMultiplier: 3,               // Take profit için çarpan
+    useBreakEven: true,                // Break-even kullan
+    breakEvenActivationPercent: 0.8    // Break-even aktivasyon yüzdesi
+  }
 };

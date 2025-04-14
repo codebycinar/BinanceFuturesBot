@@ -7,6 +7,7 @@ const PerformanceTracker = require('./services/PerformanceTracker');
 const RLPositionManager = require('./services/RLPositionManager');
 const RLModelService = require('./services/RLModelService');
 const RLSupportResistanceStrategy = require('./strategies/RLSupportResistanceStrategy');
+const OnchainMetricsService = require('./services/OnchainMetricsService');
 const EnhancedPositionManager = require('./services/EnhancedPositionManager');
 const config = require('./config/config');
 const telegramService = require('./services/TelegramService');
@@ -132,7 +133,11 @@ Active RL Positions: ${activePositions}
     await EnhancedPositionManager.initialize();
     logger.info('Enhanced Position Manager initialized', { timestamp: new Date().toISOString() });
     
-    // 6. Create MarketScanner with all required services
+    // 6. Initialize OnchainMetricsService
+    const onchainMetricsService = new OnchainMetricsService();
+    logger.info('Onchain Metrics Service initialized', { timestamp: new Date().toISOString() });
+    
+    // 7. Create MarketScanner with all required services
     const marketScanner = new MarketScanner(binanceService, orderService, mtfService, performanceTracker);
     await marketScanner.initialize();
     logger.info('Market Scanner initialized', { timestamp: new Date().toISOString() });
@@ -140,6 +145,17 @@ Active RL Positions: ${activePositions}
     // Strateji bilgisini logla
     const activeStrategy = config.activeStrategy || 'TurtleTradingStrategy';
     logger.info(`Active strategy: ${activeStrategy}`, { timestamp: new Date().toISOString() });
+    
+    // Test onchain metrics for BTC
+    try {
+        const btcSignal = await onchainMetricsService.getSmartMoneySignal('BTCUSDT');
+        logger.info(`BTC Smart Money Signal: ${btcSignal.signal}, Confidence: ${btcSignal.confidence?.toFixed(2)}`);
+        if (btcSignal.metrics) {
+            logger.info(`BTC Onchain Metrics: Exchange Flow ${btcSignal.metrics.netFlow?.toFixed(2) || 'N/A'}, MVRV Z-Score: ${btcSignal.metrics.mvrvZScore?.toFixed(2) || 'N/A'}`);
+        }
+    } catch (error) {
+        logger.error('Error testing onchain metrics:', error.message);
+    }
     
     // Initialize RL Model Service
     const rlModelService = new RLModelService();
