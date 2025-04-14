@@ -33,7 +33,7 @@ class OnchainMetricsService {
   constructor() {
     // API tabanları
     this.coincapApiKey = 'b8d054986a573ef5ac4fd82ef792eec7dc773ab10efd063c3e024fdfddb3a19b';
-    this.coincapBaseUrl = 'https://api.coincap.io/v3'; // v3 API
+    this.coincapBaseUrl = 'https://api.coincap.io/v2'; // v2 API'ye geri dön, v3 henüz hazır olmayabilir
     this.binanceBaseUrl = 'https://api.binance.com/api/v3';
     
     // Önbellek sistemi
@@ -644,7 +644,7 @@ class OnchainMetricsService {
       // İstek zamanını güncelle
       this.lastRequestTime[apiName] = Date.now();
       
-      // CoinCap API için Authorization header ekle
+      // CoinCap API için authorization ekle (v2 API için)
       if (apiName === 'coincap') {
         const url = arguments[0]; // URL'yi ilk parametre olarak al
         
@@ -652,11 +652,20 @@ class OnchainMetricsService {
         requestFunc = async () => {
           try {
             logger.debug(`Making CoinCap API request to: ${url}`);
-            return await axios.get(url, {
-              headers: {
-                'Authorization': `Bearer ${this.coincapApiKey}`
-              }
-            });
+            
+            // CoinCap v2 API için farklı yöntemleri deneyelim
+            // 1. API key'i URL parametresi olarak ekle
+            const requestUrl = new URL(url);
+            requestUrl.searchParams.append('apiKey', this.coincapApiKey);
+            
+            // 2. Authorization header ile dene
+            const headers = {
+              'Authorization': `Bearer ${this.coincapApiKey}`,
+              'API-Key': this.coincapApiKey
+            };
+            
+            // İsteği yap
+            return await axios.get(requestUrl.toString(), { headers });
           } catch (error) {
             logger.error(`CoinCap API request error: ${error.message}`);
             throw error;
