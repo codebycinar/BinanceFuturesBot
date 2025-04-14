@@ -1,37 +1,63 @@
-console.log("Testing position size calculation...");
-const OrderService = require("./src/services/OrderService");
-const config = require("./src/config/config");
+/**
+ * OnchainMetricsService Test
+ * 
+ * Bu script, OnchainMetricsService'in düzgün çalışıp çalışmadığını test eder
+ * ve API throttling mekanizmasını kontrol eder.
+ */
 
-// Mock BinanceService
-const mockBinanceService = {
-  getFuturesBalance: async () => 1000,
-  getCurrentPrice: async () => 50000,
-  getStepSize: async () => 0.001,
-  adjustPrecision: (qty, step) => Math.floor(qty / step) * step,
-  roundQuantity: (qty, step) => Math.floor(qty / step) * step,
-};
+const OnchainMetricsService = require('./src/services/OnchainMetricsService');
+const logger = require('./src/utils/logger');
 
-// Create OrderService instance with mock
-const orderService = new OrderService(mockBinanceService);
-
-async function testPositionSizeCalculation() {
-  // Test with calculate_position_size = false
-  config.calculate_position_size = false;
-  config.static_position_size = 100;
+async function testOnchainMetrics() {
+  logger.info('Starting OnchainMetrics test...');
   
-  const staticResult = await orderService.calculatePositionSize("BTCUSDT", 50000);
-  console.log("Static position size:", staticResult);
+  const metrics = new OnchainMetricsService();
   
-  // Test with calculate_position_size = true
-  config.calculate_position_size = true;
-  config.riskPerTrade = 0.05; // 5% of balance to make it above minimum notional
+  // Test assets
+  const assets = ['BTC', 'ETH', 'BNB'];
   
-  const dynamicResult = await orderService.calculatePositionSize("BTCUSDT", 50000);
-  console.log("Dynamic position size:", dynamicResult);
+  // Test all methods on each asset
+  for (const asset of assets) {
+    logger.info(`Testing metrics for ${asset}...`);
+    
+    try {
+      // Get exchange net flow
+      const netFlow = await metrics.getExchangeNetFlow(asset);
+      logger.info(`${asset} Exchange Net Flow: ${netFlow}`);
+      
+      // Get whale transactions
+      const whaleActivity = await metrics.getWhaleTransactions(asset);
+      logger.info(`${asset} Whale Activity: ${whaleActivity}`);
+      
+      // Get MVRV Z-Score
+      const mvrvZScore = await metrics.getMVRVZScore(asset);
+      logger.info(`${asset} Market Sentiment Score: ${mvrvZScore}`);
+      
+      // Get NVT Ratio
+      const nvtRatio = await metrics.getNVTRatio(asset);
+      logger.info(`${asset} NVT Ratio: ${nvtRatio}`);
+      
+      // Get SOPR
+      const sopr = await metrics.getSOPR(asset);
+      logger.info(`${asset} SOPR: ${sopr}`);
+      
+      // Get smart money signal
+      const signal = await metrics.getSmartMoneySignal(`${asset}USDT`);
+      logger.info(`${asset} Smart Money Signal: ${signal.signal} (confidence: ${signal.confidence.toFixed(2)})`);
+      
+    } catch (error) {
+      logger.error(`Error testing metrics for ${asset}: ${error.message}`);
+    }
+    
+    // Add a delay between assets to avoid overwhelming APIs
+    logger.info(`Waiting 5 seconds before next asset...`);
+    await new Promise(resolve => setTimeout(resolve, 5000));
+  }
   
-  // Test calculateStaticPositionSize method with a valid allocation
-  const staticSize = await orderService.calculateStaticPositionSize("BTCUSDT", 150);
-  console.log("Static position size with calculateStaticPositionSize:", staticSize);
+  logger.info('OnchainMetrics test completed');
 }
 
-testPositionSizeCalculation().catch(console.error);
+// Run the test
+testOnchainMetrics().catch(err => {
+  logger.error(`Test failed: ${err.message}`);
+});
