@@ -144,17 +144,22 @@ class TurtleTradingStrategy {
             if (previousHigh < entryDonchian.upper && currentHigh >= entryDonchian.upper) {
                 logger.info(`${symbol}: Üst Donchian bandına temas algılandı. Band: ${entryDonchian.upper}, Mum yüksek: ${currentHigh}`);
                 
+                // Daha net kırılma için aradaki mesafeyi kontrol et (%0.2)
+                const breakoutPercentage = ((currentHigh - entryDonchian.upper) / entryDonchian.upper) * 100;
+                const isSignificantBreakout = breakoutPercentage >= 0.2;
+                
                 // Doğrulama için yakındaki mumları kontrol et
                 let highTouchCount = 0;
                 for (let i = candles.length - confirmationPeriod; i < candles.length; i++) {
-                    // Mumun en yüksek değeri banta teğet veya geçtiyse say
-                    if (parseFloat(candles[i].high) >= entryDonchian.upper * 0.998) {
+                    // Mumun en yüksek değeri banta teğet veya geçtiyse say (daha düşük tolerans %0.995)
+                    if (parseFloat(candles[i].high) >= entryDonchian.upper * 0.995) {
                         highTouchCount++;
                     }
                 }
                 
-                breakoutHigh = highTouchCount >= 1; // En az bir mumda teması doğrula
-                logger.info(`${symbol}: Üst band temas sayısı: ${highTouchCount}, Breakout: ${breakoutHigh}`);
+                // En az 2 mumda temas arayarak doğrulama kriterini sıkılaştır
+                breakoutHigh = highTouchCount >= 2 || (isSignificantBreakout && highTouchCount >= 1);
+                logger.info(`${symbol}: Üst band temas sayısı: ${highTouchCount}, Breakout %: ${breakoutPercentage.toFixed(2)}%, Is significant: ${isSignificantBreakout}, Breakout: ${breakoutHigh}`);
             }
             
             // Aşağı kırılma kontrolü - mumun en düşük değeri alt sınırı geçtiyse
@@ -162,21 +167,33 @@ class TurtleTradingStrategy {
             if (previousLow > entryDonchian.lower && currentLow <= entryDonchian.lower) {
                 logger.info(`${symbol}: Alt Donchian bandına temas algılandı. Band: ${entryDonchian.lower}, Mum düşük: ${currentLow}`);
                 
+                // Daha net kırılma için aradaki mesafeyi kontrol et (%0.2)
+                const breakoutPercentage = ((entryDonchian.lower - currentLow) / entryDonchian.lower) * 100;
+                const isSignificantBreakout = breakoutPercentage >= 0.2;
+                
                 // Doğrulama için yakındaki mumları kontrol et
                 let lowTouchCount = 0;
                 for (let i = candles.length - confirmationPeriod; i < candles.length; i++) {
-                    // Mumun en düşük değeri banta teğet veya geçtiyse say
-                    if (parseFloat(candles[i].low) <= entryDonchian.lower * 1.002) {
+                    // Mumun en düşük değeri banta teğet veya geçtiyse say (daha düşük tolerans %1.005)
+                    if (parseFloat(candles[i].low) <= entryDonchian.lower * 1.005) {
                         lowTouchCount++;
                     }
                 }
                 
-                breakoutLow = lowTouchCount >= 1; // En az bir mumda teması doğrula
-                logger.info(`${symbol}: Alt band temas sayısı: ${lowTouchCount}, Breakout: ${breakoutLow}`);
+                // En az 2 mumda temas arayarak doğrulama kriterini sıkılaştır
+                breakoutLow = lowTouchCount >= 2 || (isSignificantBreakout && lowTouchCount >= 1);
+                logger.info(`${symbol}: Alt band temas sayısı: ${lowTouchCount}, Breakout %: ${breakoutPercentage.toFixed(2)}%, Is significant: ${isSignificantBreakout}, Breakout: ${breakoutLow}`);
             }
             
-            // Hacim doğrulaması ekle
-            const volumeConfirmation = this.checkVolumeConfirmation(candles);
+            // Hacim doğrulaması ekle - hacim eşiğini 1.5x'ten 1.3x'e düşürdük
+            const volumeConfirmation = this.checkVolumeConfirmation(candles, 1.3);
+            
+            // Volatilite analizi - ATR/Fiyat oranı
+            const volatilityPercent = (atr / currentClose) * 100;
+            const volatilityLevel = volatilityPercent > 2.5 ? 'HIGH' : volatilityPercent < 1.0 ? 'LOW' : 'MEDIUM';
+            
+            // Volatiliteye göre ATR çarpanı ayarlanması
+            const dynamicAtrMultiplier = this.getDynamicAtrMultiplier(volatilityLevel);
             
             // Çıkış sinyalleri için kontrol (mumun en düşük veya en yüksek değerlerine bakarak)
             const exitLong = currentLow <= exitDonchian.lower;
@@ -188,16 +205,24 @@ class TurtleTradingStrategy {
                 ? config.riskPerTrade * config.accountSize 
                 : config.static_position_size;
                 
-            // Toplam 4 giriş yapılabilir, her biri için kademeli olarak azalan risk
-            const positionEntries = 4;
+            // Toplam giriş sayısını 4'ten 3'e düşürdük
+            const positionEntries = 3;
             const entryRisk = initialRisk / positionEntries;
                 
-            const riskPerUnit = atr * this.parameters.atrMultiplier;
+            // Volatiliteye göre ayarlanmış risk
+            const riskPerUnit = atr * dynamicAtrMultiplier;
             const units = entryRisk / riskPerUnit;
             
-            // Maksimum pozisyon büyüklüğünü 30 USDT olarak sınırlandır
+            // Maksimum pozisyon büyüklüğünü sınırlandır
             const maxPositionSize = config.static_position_size;
             let allocation = units * currentClose;
+            
+            // Volatiliteye göre pozisyon boyutunu ayarla
+            if (volatilityLevel === 'HIGH') {
+                // Yüksek volatilitede pozisyon boyutunu %25 düşür
+                allocation = allocation * 0.75;
+                logger.info(`Reduced position size by 25% due to HIGH volatility for ${symbol}`);
+            }
             
             // Pozisyon boyutu kontrol ve sınırlama
             if (allocation > maxPositionSize) {
@@ -219,92 +244,153 @@ class TurtleTradingStrategy {
                 existingPositions = { hasLong: false, hasShort: false, longEntries: 0, shortEntries: 0 };
             }
             
-            // Trend ile uyumlu işlemleri tercih et
+            // Trend analizi
+            const trendStrength = isUptrend ? 'UPTREND' : isDowntrend ? 'DOWNTREND' : 'NEUTRAL';
+            
+            // Trend ve kırılma ile uyumlu işlemleri tercih et
             if (breakoutHigh) {
+                // Trend ile uyumlu mu kontrol et
+                const trendAligned = isUptrend || (!isDowntrend && currentClose > sma50);
+                
+                if (!trendAligned) {
+                    unmetConditions.push('Breakout not aligned with trend direction');
+                }
+                
                 // Long pozisyon sinyali
                 if (existingPositions.hasLong) {
                     // Ek giriş (pyramiding) sinyali - pozisyona ekleme
-                    if (existingPositions.longEntries < 4) {
+                    if (existingPositions.longEntries < 3) { // Maksimum giriş sayısını 4'ten 3'e düşürdük
                         // Son girişten beri yeterli zaman geçmiş mi kontrol et
                         const canEnterNewPosition = await this.canAddNewPosition(symbol, 'LONG');
                         
-                        if (canEnterNewPosition) {
+                        if (canEnterNewPosition && trendAligned) {
                             signal = 'ADD_BUY';
                             logger.info(`Turtle Trading ADD LONG signal for ${symbol} at ${currentClose} (entry #${existingPositions.longEntries + 1})`);
                         } else {
-                            logger.info(`Waiting for next timeframe to add to LONG position for ${symbol}`);
+                            if (!trendAligned) {
+                                logger.info(`Skipping ADD LONG for ${symbol} - trend not aligned with position`);
+                            } else {
+                                logger.info(`Waiting for next timeframe to add to LONG position for ${symbol}`);
+                            }
                             signal = 'NEUTRAL';
                         }
                     } else {
-                        logger.info(`Maximum long entries (4) reached for ${symbol}, not adding more`);
+                        logger.info(`Maximum long entries (3) reached for ${symbol}, not adding more`);
                         signal = 'NEUTRAL';
                     }
                 } else {
                     // Aynı zaman diliminde bir önceki işlemimiz var mı kontrol et
                     const canEnterNewPosition = await this.canEnterNewTimeframe(symbol);
                     
-                    if (canEnterNewPosition) {
-                        // Yeni giriş sinyali
-                        signal = volumeConfirmation ? 'BUY' : 'WEAK_BUY';
-                        
-                        if (!volumeConfirmation) {
+                    // Trendle uyumlu ve giriş yapılabilir durumda ise sinyal oluştur
+                    if (canEnterNewPosition && trendAligned) {
+                        // Trend ve hacim onayı tam ise güçlü sinyal
+                        if (trendAligned && volumeConfirmation) {
+                            signal = 'BUY';
+                        } else if (trendAligned) {
+                            signal = 'WEAK_BUY';
                             unmetConditions.push('Volume confirmation missing');
+                        } else {
+                            signal = 'NEUTRAL';
+                            unmetConditions.push('Trend not aligned with breakout');
                         }
                         
-                        logger.info(`Turtle Trading LONG signal for ${symbol} at ${currentClose}`);
-                        logger.info(`Donchian Upper Breakout: ${entryDonchian.upper}`);
+                        if (signal !== 'NEUTRAL') {
+                            logger.info(`Turtle Trading LONG signal for ${symbol} at ${currentClose}`);
+                            logger.info(`Donchian Upper Breakout: ${entryDonchian.upper}, Trend: ${trendStrength}, Volatility: ${volatilityLevel}`);
+                        }
                     } else {
-                        logger.info(`Already opened a position in this timeframe for ${symbol}, waiting for next timeframe`);
+                        if (!trendAligned) {
+                            logger.info(`Skipping new LONG for ${symbol} - trend not aligned with position`);
+                        } else {
+                            logger.info(`Already opened a position in this timeframe for ${symbol}, waiting for next timeframe`);
+                        }
                         signal = 'NEUTRAL';
                     }
                 }
                 
-                // Her durumda stop loss ve take profit hesapla
-                stopLoss = currentLow - (atr * this.parameters.atrMultiplier);
-                takeProfit = currentHigh + (atr * this.parameters.atrMultiplier * this.parameters.profitMultiplier);
+                // Volatiliteye göre dinamik olarak stop loss ve take profit hesapla
+                stopLoss = currentLow - (atr * dynamicAtrMultiplier);
+                takeProfit = currentHigh + (atr * dynamicAtrMultiplier * this.parameters.profitMultiplier);
+                
+                // Daha mantıklı stop loss olması için düzeltme
+                if (currentClose - stopLoss < atr * 1.5) {
+                    // Stop loss çok yakın, volatiliteye göre kaydır
+                    stopLoss = currentClose - (atr * (dynamicAtrMultiplier + 0.5));
+                    logger.info(`Adjusted stop loss for ${symbol} due to close proximity`);
+                }
                 
             } else if (breakoutLow) {
+                // Trend ile uyumlu mu kontrol et
+                const trendAligned = isDowntrend || (!isUptrend && currentClose < sma50);
+                
+                if (!trendAligned) {
+                    unmetConditions.push('Breakout not aligned with trend direction');
+                }
+                
                 // Short pozisyon sinyali
                 if (existingPositions.hasShort) {
                     // Ek giriş (pyramiding) sinyali - pozisyona ekleme
-                    if (existingPositions.shortEntries < 4) {
+                    if (existingPositions.shortEntries < 3) { // Maksimum giriş sayısını 4'ten 3'e düşürdük
                         // Son girişten beri yeterli zaman geçmiş mi kontrol et
                         const canEnterNewPosition = await this.canAddNewPosition(symbol, 'SHORT');
                         
-                        if (canEnterNewPosition) {
+                        if (canEnterNewPosition && trendAligned) {
                             signal = 'ADD_SELL';
                             logger.info(`Turtle Trading ADD SHORT signal for ${symbol} at ${currentClose} (entry #${existingPositions.shortEntries + 1})`);
                         } else {
-                            logger.info(`Waiting for next timeframe to add to SHORT position for ${symbol}`);
+                            if (!trendAligned) {
+                                logger.info(`Skipping ADD SHORT for ${symbol} - trend not aligned with position`);
+                            } else {
+                                logger.info(`Waiting for next timeframe to add to SHORT position for ${symbol}`);
+                            }
                             signal = 'NEUTRAL';
                         }
                     } else {
-                        logger.info(`Maximum short entries (4) reached for ${symbol}, not adding more`);
+                        logger.info(`Maximum short entries (3) reached for ${symbol}, not adding more`);
                         signal = 'NEUTRAL';
                     }
                 } else {
                     // Aynı zaman diliminde bir önceki işlemimiz var mı kontrol et
                     const canEnterNewPosition = await this.canEnterNewTimeframe(symbol);
                     
-                    if (canEnterNewPosition) {
-                        // Yeni giriş sinyali
-                        signal = volumeConfirmation ? 'SELL' : 'WEAK_SELL';
-                        
-                        if (!volumeConfirmation) {
+                    // Trendle uyumlu ve giriş yapılabilir durumda ise sinyal oluştur
+                    if (canEnterNewPosition && trendAligned) {
+                        // Trend ve hacim onayı tam ise güçlü sinyal
+                        if (trendAligned && volumeConfirmation) {
+                            signal = 'SELL';
+                        } else if (trendAligned) {
+                            signal = 'WEAK_SELL';
                             unmetConditions.push('Volume confirmation missing');
+                        } else {
+                            signal = 'NEUTRAL';
+                            unmetConditions.push('Trend not aligned with breakout');
                         }
                         
-                        logger.info(`Turtle Trading SHORT signal for ${symbol} at ${currentClose}`);
-                        logger.info(`Donchian Lower Breakout: ${entryDonchian.lower}`);
+                        if (signal !== 'NEUTRAL') {
+                            logger.info(`Turtle Trading SHORT signal for ${symbol} at ${currentClose}`);
+                            logger.info(`Donchian Lower Breakout: ${entryDonchian.lower}, Trend: ${trendStrength}, Volatility: ${volatilityLevel}`);
+                        }
                     } else {
-                        logger.info(`Already opened a position in this timeframe for ${symbol}, waiting for next timeframe`);
+                        if (!trendAligned) {
+                            logger.info(`Skipping new SHORT for ${symbol} - trend not aligned with position`);
+                        } else {
+                            logger.info(`Already opened a position in this timeframe for ${symbol}, waiting for next timeframe`);
+                        }
                         signal = 'NEUTRAL';
                     }
                 }
                 
-                // Her durumda stop loss ve take profit hesapla
-                stopLoss = currentHigh + (atr * this.parameters.atrMultiplier);
-                takeProfit = currentLow - (atr * this.parameters.atrMultiplier * this.parameters.profitMultiplier);
+                // Volatiliteye göre dinamik olarak stop loss ve take profit hesapla
+                stopLoss = currentHigh + (atr * dynamicAtrMultiplier);
+                takeProfit = currentLow - (atr * dynamicAtrMultiplier * this.parameters.profitMultiplier);
+                
+                // Daha mantıklı stop loss olması için düzeltme
+                if (stopLoss - currentClose < atr * 1.5) {
+                    // Stop loss çok yakın, volatiliteye göre kaydır
+                    stopLoss = currentClose + (atr * (dynamicAtrMultiplier + 0.5));
+                    logger.info(`Adjusted stop loss for ${symbol} due to close proximity`);
+                }
                 
             } else if (exitLong && existingPositions.hasLong) {
                 // Long pozisyon için çıkış sinyali
@@ -588,7 +674,7 @@ class TurtleTradingStrategy {
     }
     
     // Hacim doğrulaması kontrolü
-    checkVolumeConfirmation(candles) {
+    checkVolumeConfirmation(candles, threshold = 1.5) {
         try {
             // Son 20 mumun hacim ortalaması
             const volumes = candles.slice(-20).map(c => parseFloat(c.volume));
@@ -597,8 +683,18 @@ class TurtleTradingStrategy {
             // Son mumun hacmi
             const lastVolume = volumes[volumes.length - 1];
             
-            // Son hacim ortalamanın 1.5 katından büyükse doğrula
-            return lastVolume > avgVolume * 1.5;
+            // İki son mumun hacim ortalaması (daha güvenilir)
+            const lastTwoVolume = (parseFloat(candles[candles.length - 1].volume) + 
+                                  parseFloat(candles[candles.length - 2].volume)) / 2;
+            
+            // Son iki mumun hacmi ortalamanın threshold katından büyükse veya
+            // son mumun hacmi ortalamanın 1.7 katından büyükse doğrula
+            const confirmed = lastTwoVolume > avgVolume * threshold || lastVolume > avgVolume * 1.7;
+            
+            logger.info(`Volume confirmation for last candle: ${lastVolume > avgVolume * threshold}, ratio: ${(lastVolume/avgVolume).toFixed(2)}x`);
+            logger.info(`Volume confirmation for last two candles: ${lastTwoVolume > avgVolume * threshold}, ratio: ${(lastTwoVolume/avgVolume).toFixed(2)}x`);
+            
+            return confirmed;
         } catch (error) {
             logger.error('Error checking volume confirmation:', error);
             return false;
@@ -615,6 +711,24 @@ class TurtleTradingStrategy {
         } catch (error) {
             logger.error('Error calculating average volume:', error);
             return 0;
+        }
+    }
+    
+    // Volatiliteye göre dinamik ATR çarpanı hesapla
+    getDynamicAtrMultiplier(volatilityLevel) {
+        // Piyasanın volatilitesine göre ATR çarpanını ayarla
+        switch (volatilityLevel) {
+            case 'HIGH':
+                // Yüksek volatilitede daha geniş stop loss
+                return this.parameters.atrMultiplier + 1.0;
+            case 'MEDIUM':
+                // Orta volatilitede normal stop loss
+                return this.parameters.atrMultiplier + 0.5;
+            case 'LOW':
+                // Düşük volatilitede daha dar stop loss
+                return this.parameters.atrMultiplier;
+            default:
+                return this.parameters.atrMultiplier;
         }
     }
     
