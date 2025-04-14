@@ -1,13 +1,17 @@
 /**
- * OnchainMetricsService.js - Kripto varlıklar için onchain metrikleri sağlayan servis
+ * OnchainMetricsService.js - Kripto varlıklar için temel piyasa metriklerini sağlayan servis
  * 
- * Bu servis, çeşitli API'lar aracılığıyla blockchain üzerindeki 
- * verileri analiz ederek, piyasaya giren/çıkan para akışı, 
- * whale hareketleri ve akıllı para davranışları hakkında bilgi sağlar.
+ * Bu servis, Binance API ve CoinCap API kullanarak temel piyasa göstergelerini 
+ * hesaplayıp, onchain metriklerin yerini tutacak veriler sağlar.
+ * 
+ * Rate limit sorunlarına çözüm olarak:
+ * 1. Binance API'ye öncelik verir
+ * 2. 24 saatlik önbellek kullanır (günde 1 istek)
+ * 3. CoinCap API'den minimal sayıda istek yapar
  * 
  * Kullanılan veri kaynakları:
- * - CoinCap API (API key ile): Market verisi (ana kaynak)
  * - Binance API: Exchange likiditesi, akışı, fiyat ve hacim verileri
+ * - CoinCap API (ücretsiz plan): Market verisi (minimal sayıda istek)
  * 
  * Temel stratejiler:
  * - Exchange net flow: Order book ve trade verilerinden hesaplanır
@@ -17,12 +21,9 @@
  * - SOPR benzeri analiz: RSI ve işlem verilerinden yaklaşık hesaplama
  * 
  * Diğer özellikler:
- * - CoinCap API için kayıtlı API key kullanımı (aylık 2,500 kredi)
  * - Tüm API istekleri throttledRequest metodu üzerinden yapılır
- * - Uzun süreli önbellek (6 saat) ile API isteklerinin sayısı minimize edilir
- * - Rate limit hatalarına karşı otomatik geri çekilme ve yeniden deneme
- * - Maximum retry limiti ile sonsuz döngülerin önlenmesi
- * - Kredi kullanımını optimize etmek için akıllı önbellekleme
+ * - Uzun süreli önbellek (24 saat) ile API isteklerinin sayısı minimize edilir
+ * - CoinCap API'si için günde maksimum 5 istek (ücretsiz limit)
  */
 const axios = require('axios');
 const logger = require('../utils/logger');
@@ -30,9 +31,6 @@ const config = require('../config/config');
 
 class OnchainMetricsService {
   constructor() {
-    // API kimlik bilgileri
-    this.coincapApiKey = 'b8d054986a573ef5ac4fd82ef792eec7dc773ab10efd063c3e024fdfddb3a19b';
-    
     // API tabanları
     this.coincapBaseUrl = 'https://api.coincap.io/v2';
     this.binanceBaseUrl = 'https://api.binance.com/api/v3';
@@ -40,22 +38,26 @@ class OnchainMetricsService {
     // Önbellek sistemi
     this.cache = {};
     this.cacheExpiry = {};
-    this.cacheDuration = 360 * 60 * 1000; // 6 saat önbellek
+    this.cacheDuration = 24 * 60 * 60 * 1000; // 24 saat (1 gün) önbellek süresi
     
     // API istek yönetimi
     this.lastRequestTime = {};
     this.requestDelay = {
-      'coincap': 1000,    // CoinCap için 1 saniye gecikme (API key kullandığımız için kısa)
+      'coincap': 10000,   // CoinCap için 10 saniye gecikme (ücretsiz plan)
       'binance': 500      // Binance için 0.5 saniye gecikme
     };
     
-    // API çağrı sayısı istatistikleri (kredi kullanımını takip etmek için)
-    this.apiCallCount = {
+    // Günlük API istekleri için limit
+    this.dailyRequestLimit = {
+      'coincap': 5        // CoinCap için günlük maksimum 5 istek (ücretsiz plan güvenli limiti)
+    };
+    this.dailyRequestCount = {
       'coincap': 0
     };
+    this.lastResetDate = new Date().toDateString();
     
     // API hataları için maksimum yeniden deneme sayısı
-    this.maxRetries = 3;
+    this.maxRetries = 2;
     
     // Desteklenen varlıklar
     this.supportedAssets = ['BTC', 'ETH', 'BNB', 'SOL', 'ADA', 'XRP', 'DOT'];
@@ -74,7 +76,7 @@ class OnchainMetricsService {
       'LINK': 'chainlink'
     };
     
-    logger.info('OnchainMetricsService initialized with CoinCap API key (2,500 monthly credits)');
+    logger.info(`OnchainMetricsService initialized with daily limits: CoinCap=${this.dailyRequestLimit.coincap} requests/day`);
   }
 
   /**
@@ -568,7 +570,7 @@ class OnchainMetricsService {
 
   /**
    * API isteği gönderme işlemini rate limit'e uygun olarak yönetir
-   * API key'leri gerektiğinde ekler ve kredi kullanımını izler
+   * Günlük API istek limitlerini kontrol eder ve önbellek kullanımını optimize eder
    * @param {string} apiName - API adı ('coincap' veya 'binance')
    * @param {Function} requestFunc - API isteğini yapacak async fonksiyon
    * @param {number} retryCount - Yeniden deneme sayısı (iç kullanım için)
@@ -576,6 +578,26 @@ class OnchainMetricsService {
    */
   async throttledRequest(apiName, requestFunc, retryCount = 0) {
     try {
+      // Günlük talep limitini kontrol et ve sıfırla
+      const today = new Date().toDateString();
+      if (this.lastResetDate !== today) {
+        this.lastResetDate = today;
+        this.dailyRequestCount.coincap = 0;
+        logger.info(`Daily API request count reset for ${apiName}`);
+      }
+      
+      // CoinCap için günlük istek limiti kontrolü
+      if (apiName === 'coincap') {
+        if (this.dailyRequestCount.coincap >= this.dailyRequestLimit.coincap) {
+          logger.warn(`Daily request limit (${this.dailyRequestLimit.coincap}) reached for ${apiName}, using cached data only`);
+          throw new Error(`Daily request limit reached for ${apiName}`);
+        }
+        
+        // Günlük istek sayısını artır
+        this.dailyRequestCount.coincap++;
+        logger.info(`CoinCap API request count: ${this.dailyRequestCount.coincap}/${this.dailyRequestLimit.coincap} today`);
+      }
+      
       // Yeniden deneme sayısı limitini kontrol et
       if (retryCount >= this.maxRetries) {
         logger.error(`Maximum retry attempts (${this.maxRetries}) reached for ${apiName} API, giving up`);
@@ -596,33 +618,6 @@ class OnchainMetricsService {
       
       // İstek zamanını güncelle
       this.lastRequestTime[apiName] = Date.now();
-      
-      // API çağrı sayısını artır (sadece CoinCap için)
-      if (apiName === 'coincap') {
-        this.apiCallCount.coincap++;
-        if (this.apiCallCount.coincap % 10 === 0) {
-          logger.info(`CoinCap API call count: ${this.apiCallCount.coincap} (monthly limit: 2500)`);
-        }
-      }
-      
-      // CoinCap için özel API key işleme
-      if (apiName === 'coincap') {
-        // İşler bu noktadan CoinCap API için biraz karmaşıktır
-        // CoinCap API bir URL parametresi olarak API key beklediği için
-        // fonksiyonu özel bir işlemden geçirmemiz gerekiyor
-        
-        // Orijinal URL'yi alın ve API key'i ekleyin
-        const originalRequestFunc = requestFunc;
-        requestFunc = async () => {
-          try {
-            const params = { apiKey: this.coincapApiKey };
-            const response = await originalRequestFunc(params);
-            return response;
-          } catch (error) {
-            throw error;
-          }
-        };
-      }
       
       // İsteği yap
       return await requestFunc();
