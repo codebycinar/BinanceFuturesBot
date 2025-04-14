@@ -134,13 +134,34 @@ Available commands:
             // Add timeout to prevent hanging
             const sendPromise = this.bot.telegram.sendMessage(this.chatId, message);
             const timeoutPromise = new Promise((_, reject) => 
-                setTimeout(() => reject(new Error('Telegram sendMessage timeout after 3 seconds')), 3000)
+                setTimeout(() => reject(new Error('Telegram sendMessage timeout after 5 seconds')), 5000)
             );
             
             await Promise.race([sendPromise, timeoutPromise]);
             return true;
         } catch (error) {
             logger.error(`Error sending Telegram message: ${error.message}`);
+            
+            // Try to recover from error by checking if we need to enter fallback mode
+            if (error.message.includes('ETELEGRAM') || 
+                error.message.includes('timeout') || 
+                error.message.includes('Too Many Requests')) {
+                logger.warn('Telegram API error detected. Entering fallback mode for 5 minutes.');
+                
+                // Temporarily enter fallback mode
+                this.fallbackMode = true;
+                
+                // Try to recover after 5 minutes
+                setTimeout(() => {
+                    logger.info('Attempting to recover from Telegram fallback mode');
+                    this.fallbackMode = false;
+                }, 5 * 60 * 1000); // 5 minutes
+                
+                // Log the message instead
+                logger.info(`[TELEGRAM MESSAGE (fallback)]: ${message}`);
+                return true;
+            }
+            
             return false;
         }
     }
