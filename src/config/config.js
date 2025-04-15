@@ -17,7 +17,7 @@ module.exports = {
   topSymbols: [],
   
   // Maksimum açık pozisyon sayısı
-  maxOpenPositions: 3,
+  maxOpenPositions: 6,
   
   // Market tarama aralığı (ms)
   marketScanInterval: 5 * 60 * 1000, // 5 dakika
@@ -105,7 +105,6 @@ module.exports = {
 
   // Diğer ayarlar
   marketScanInterval: 120000, // 2 dakika
-  maxOpenPositions: 3, // Açık pozisyon limiti
   
   // RL Bot için izlenecek semboller (daha az sayıda sembolle çalışalım)
   tradingPairs: [
@@ -139,7 +138,7 @@ module.exports = {
     // Pozisyon boyutlandırma
     maxAllocation: 30,                 // Maksimum pozisyon boyutu (USDT)
     baseAllocation: 20,                // Temel pozisyon boyutu (USDT)
-    maxEntries: 3,                     // Maksimum pozisyon girişi
+    maxEntries: 6,                     // Maksimum pozisyon girişi
     
     // Risk yönetimi
     atrMultiplier: 2.5,                // Stop loss için ATR çarpanı (Turtle'dan daha geniş)
