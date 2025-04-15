@@ -20,7 +20,8 @@ class TurtleTradingStrategy {
             timeframe: '1d',      // Günlük zaman dilimi (daha uzun trend için)
             volumeConfirmation: true, // Hacim onayı kontrolü
             useBreakEven: true,   // Break-even kullanımını aç/kapa
-            breakEvenActivationPercent: 0.8 // %0.8 kar seviyesinde aktifleştir (ATR'nin katsayısı)
+            breakEvenActivationPercent: 0.8, // %0.8 kar seviyesinde aktifleştir (ATR'nin katsayısı)
+            minStopLossPercent: 1.5 // Minimum stop loss mesafesi (giriş fiyatının yüzdesi olarak)
         };
         
         // Konfigürasyonda Turtle stratejisi ayarları varsa, bunları kullan
@@ -393,6 +394,14 @@ class TurtleTradingStrategy {
                     logger.info(`Adjusted stop loss for ${symbol} due to close proximity`);
                 }
                 
+                // Minimum yüzde olarak stop loss mesafesi kontrolü (yeni eklenen güvenlik önlemi)
+                const minStopLossDistance = currentClose * (this.parameters.minStopLossPercent / 100);
+                if (currentClose - stopLoss < minStopLossDistance) {
+                    // Stop loss, minimum mesafeden daha yakın ise yüzde bazlı minimum mesafeyi uygula
+                    stopLoss = currentClose - minStopLossDistance;
+                    logger.info(`Enforced minimum stop loss distance of ${this.parameters.minStopLossPercent}% for ${symbol} LONG position`);
+                }
+                
             } else if (breakoutLow) {
                 // Trend ile uyumlu mu kontrol et
                 const trendAligned = isDowntrend || (!isUptrend && currentClose < sma50);
@@ -463,6 +472,14 @@ class TurtleTradingStrategy {
                     // Stop loss çok yakın, volatiliteye göre kaydır
                     stopLoss = currentClose + (atr * (dynamicAtrMultiplier + 0.5));
                     logger.info(`Adjusted stop loss for ${symbol} due to close proximity`);
+                }
+                
+                // Minimum yüzde olarak stop loss mesafesi kontrolü (yeni eklenen güvenlik önlemi)
+                const minStopLossDistance = currentClose * (this.parameters.minStopLossPercent / 100);
+                if (stopLoss - currentClose < minStopLossDistance) {
+                    // Stop loss, minimum mesafeden daha yakın ise yüzde bazlı minimum mesafeyi uygula
+                    stopLoss = currentClose + minStopLossDistance;
+                    logger.info(`Enforced minimum stop loss distance of ${this.parameters.minStopLossPercent}% for ${symbol} SHORT position`);
                 }
                 
             } else if (exitLong && existingPositions.hasLong) {
