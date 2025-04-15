@@ -211,14 +211,15 @@ class HybridOnchainStrategy {
             let newSignal = 'NEUTRAL';
             let unmetConditions = [];
             
-            if (combinedValue >= 0.8) {
+            // Signal thresholds adjusted to generate more strong signals
+            if (combinedValue >= 0.6) { // Lowered from 0.8
                 newSignal = 'BUY';
-            } else if (combinedValue >= 0.4) {
+            } else if (combinedValue >= 0.3) { // Lowered from 0.4
                 newSignal = 'WEAK_BUY';
                 unmetConditions.push('Combined signal strength below threshold');
-            } else if (combinedValue <= -0.8) {
+            } else if (combinedValue <= -0.6) { // Raised from -0.8
                 newSignal = 'SELL';
-            } else if (combinedValue <= -0.4) {
+            } else if (combinedValue <= -0.3) { // Raised from -0.4
                 newSignal = 'WEAK_SELL';
                 unmetConditions.push('Combined signal strength below threshold');
             } else if (technicalSignal.signal === 'ADD_BUY' && combinedValue > 0) {
@@ -227,6 +228,15 @@ class HybridOnchainStrategy {
                 newSignal = 'ADD_SELL';
             } else if (technicalSignal.signal === 'EXIT_BUY' || technicalSignal.signal === 'EXIT_SELL') {
                 newSignal = technicalSignal.signal; // Çıkış sinyallerini koru
+            }
+            
+            // If technical signal is strong (BUY/SELL), consider keeping it even with mixed onchain signals
+            if ((technicalSignal.signal === 'BUY' || technicalSignal.signal === 'SELL') && 
+                newSignal.includes('WEAK') && Math.abs(technicalValue) > 0.8) {
+                // Use the technical signal if it's very strong, even if onchain data is mixed
+                newSignal = technicalSignal.signal;
+                logger.info(`Using strong technical signal ${technicalSignal.signal} despite mixed onchain metrics`);
+                unmetConditions.push('Using technical signal despite mixed onchain data');
             }
             
             // Birleştirilmiş sinyal için açıklama

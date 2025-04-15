@@ -746,8 +746,8 @@ class TurtleTradingStrategy {
         }
     }
     
-    // Hacim doğrulaması kontrolü
-    checkVolumeConfirmation(candles, threshold = 1.5) {
+    // Hacim doğrulaması kontrolü - lowered thresholds to generate more strong signals
+    checkVolumeConfirmation(candles, threshold = 1.2) { // Lowered from 1.5 to 1.2
         try {
             // Son 20 mumun hacim ortalaması
             const volumes = candles.slice(-20).map(c => parseFloat(c.volume));
@@ -761,16 +761,32 @@ class TurtleTradingStrategy {
                                   parseFloat(candles[candles.length - 2].volume)) / 2;
             
             // Son iki mumun hacmi ortalamanın threshold katından büyükse veya
-            // son mumun hacmi ortalamanın 1.7 katından büyükse doğrula
-            const confirmed = lastTwoVolume > avgVolume * threshold || lastVolume > avgVolume * 1.7;
+            // son mumun hacmi ortalamanın 1.5 katından büyükse doğrula (lowered from 1.7)
+            const confirmed = lastTwoVolume > avgVolume * threshold || lastVolume > avgVolume * 1.5;
+            
+            // Even if volume is a bit below threshold, still confirm if there's a significant price movement
+            const currentCandle = candles[candles.length - 1];
+            const previousCandle = candles[candles.length - 2];
+            const currentHeight = Math.abs(parseFloat(currentCandle.high) - parseFloat(currentCandle.low));
+            const previousHeight = Math.abs(parseFloat(previousCandle.high) - parseFloat(previousCandle.low));
+            
+            // If current candle is significantly larger than previous one, we may confirm even with lower volume
+            const priceMovementSignificant = currentHeight > previousHeight * 1.5;
+            const almostConfirmed = lastTwoVolume > avgVolume * 0.9 || lastVolume > avgVolume * 1.2;
+            
+            const volumeConfirmed = confirmed || (priceMovementSignificant && almostConfirmed);
             
             logger.info(`Volume confirmation for last candle: ${lastVolume > avgVolume * threshold}, ratio: ${(lastVolume/avgVolume).toFixed(2)}x`);
             logger.info(`Volume confirmation for last two candles: ${lastTwoVolume > avgVolume * threshold}, ratio: ${(lastTwoVolume/avgVolume).toFixed(2)}x`);
+            if (priceMovementSignificant) {
+                logger.info(`Significant price movement detected, volume requirements reduced`);
+            }
             
-            return confirmed;
+            return volumeConfirmed;
         } catch (error) {
             logger.error('Error checking volume confirmation:', error);
-            return false;
+            // Return true more often in case of errors instead of blocking signals
+            return true;
         }
     }
     
