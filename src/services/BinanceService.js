@@ -126,8 +126,26 @@ class BinanceService {
    */
   async getCandles(symbol, interval = '1h', limit = 100, startTime = null, endTime = null) {
     try {
+      // Create cache key
+      const cacheKey = `${symbol}_${interval}_${limit}_${startTime || ''}_${endTime || ''}`;
+      
+      // Initialize candle cache if it doesn't exist
+      if (!this.candleCache) {
+        this.candleCache = {};
+        this.cacheExpiration = {};
+      }
+      
+      // Check if we have a valid cache entry
+      const now = Date.now();
+      const cacheExpiry = 60 * 1000; // 1 minute cache expiry for candles
+      
+      if (this.candleCache[cacheKey] && this.cacheExpiration[cacheKey] > now) {
+        logger.debug(`Using cached candles for ${symbol}, interval: ${interval}`);
+        return this.candleCache[cacheKey];
+      }
+      
       // retryableRequest ile ağ hatalarına karşı dayanıklı hale getir
-      return await this.retryableRequest(
+      const result = await this.retryableRequest(
         async () => {
           // Fiyat verisini almak için parametreleri hazırla
           const params = {
@@ -161,9 +179,48 @@ class BinanceService {
         `getCandles for ${symbol} (${interval})`,
         3 // 3 kez deneme yap
       );
+      
+      // Store in cache
+      this.candleCache[cacheKey] = result;
+      this.cacheExpiration[cacheKey] = now + cacheExpiry;
+      
+      // Periodically clean the cache (only set up once)
+      if (!this.cacheCleanupInterval) {
+        this.cacheCleanupInterval = setInterval(() => {
+          this.cleanCandleCache();
+        }, 5 * 60 * 1000); // Clean every 5 minutes
+      }
+      
+      return result;
     } catch (error) {
       logger.error(`Error fetching candles for ${symbol} after retries:`, error);
       return []; // Hata durumunda boş dizi döndür
+    }
+  }
+  
+  /**
+   * Clean expired cache entries
+   */
+  cleanCandleCache() {
+    try {
+      if (!this.candleCache || !this.cacheExpiration) return;
+      
+      const now = Date.now();
+      let expiredCount = 0;
+      
+      Object.keys(this.cacheExpiration).forEach(key => {
+        if (this.cacheExpiration[key] < now) {
+          delete this.candleCache[key];
+          delete this.cacheExpiration[key];
+          expiredCount++;
+        }
+      });
+      
+      if (expiredCount > 0) {
+        logger.debug(`Cleaned ${expiredCount} expired candle cache entries`);
+      }
+    } catch (error) {
+      logger.error(`Error cleaning candle cache: ${error.message}`);
     }
   }
 

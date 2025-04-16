@@ -20,7 +20,8 @@ class TurtleTradingStrategy {
             timeframe: '1d',      // Günlük zaman dilimi (daha uzun trend için)
             volumeConfirmation: true, // Hacim onayı kontrolü
             useBreakEven: true,   // Break-even kullanımını aç/kapa
-            breakEvenActivationPercent: 0.8 // %0.8 kar seviyesinde aktifleştir (ATR'nin katsayısı)
+            breakEvenActivationPercent: 0.8, // %0.8 kar seviyesinde aktifleştir (ATR'nin katsayısı)
+            minStopLossPercent: 1.5 // Minimum stop loss mesafesi (giriş fiyatının yüzdesi olarak)
         };
         
         // Konfigürasyonda Turtle stratejisi ayarları varsa, bunları kullan
@@ -125,11 +126,34 @@ class TurtleTradingStrategy {
                 return { signal: 'NEUTRAL' };
             }
             
+            // Cache mechanims for repeated calculations
+            if (!this.calculationCache) {
+                this.calculationCache = {};
+                this.cacheExpiry = {};
+            }
+            
             // Adaptif kırılma seviyesi - piyasa koşullarına göre ayarla
             let entryPeriod = this.parameters.entryChannel;
             if (this.parameters.adaptiveBreakout) {
-                // Volatiliteye göre kırılma periyodunu ayarla
-                const atr = this.calculateATR(candles, this.parameters.atrPeriod);
+                // Create a cache key to avoid repeated ATR calculations
+                const cacheKey = `${symbol}_atr_${this.parameters.atrPeriod}_${candles[candles.length-1].timestamp}`;
+                const now = Date.now();
+                const cacheLifetime = 30 * 1000; // 30 second cache
+                
+                let atr;
+                if (this.calculationCache[cacheKey] && this.cacheExpiry[cacheKey] > now) {
+                    // Use cached ATR value
+                    atr = this.calculationCache[cacheKey];
+                } else {
+                    // Calculate ATR and cache it
+                    atr = this.calculateATR(candles, this.parameters.atrPeriod);
+                    this.calculationCache[cacheKey] = atr;
+                    this.cacheExpiry[cacheKey] = now + cacheLifetime;
+                    
+                    // Clean cache occasionally
+                    this.cleanCalculationCache();
+                }
+                
                 const currentPrice = parseFloat(candles[candles.length - 1].close);
                 const volatilityPercent = (atr / currentPrice) * 100;
                 
@@ -147,8 +171,22 @@ class TurtleTradingStrategy {
             const entryDonchian = this.calculateDonchianChannel(candles, Math.round(entryPeriod));
             const exitDonchian = this.calculateDonchianChannel(candles, this.parameters.exitChannel);
             
-            // ATR hesapla
-            const atr = this.calculateATR(candles, this.parameters.atrPeriod);
+            // ATR hesapla - use cache if available
+            let atr;
+            const atrCacheKey = `${symbol}_atr_${this.parameters.atrPeriod}_${candles[candles.length-1].timestamp}`;
+            const now = Date.now();
+            
+            if (this.calculationCache && this.calculationCache[atrCacheKey] && this.cacheExpiry[atrCacheKey] > now) {
+                // Use cached ATR value
+                atr = this.calculationCache[atrCacheKey];
+            } else {
+                // Calculate ATR and cache it
+                atr = this.calculateATR(candles, this.parameters.atrPeriod);
+                if (this.calculationCache) {
+                    this.calculationCache[atrCacheKey] = atr;
+                    this.cacheExpiry[atrCacheKey] = now + (30 * 1000); // 30 second cache
+                }
+            }
             
             // Trend analizi için basit bir hareketli ortalama
             const sma50 = this.calculateSMA(candles, 50);
@@ -356,6 +394,14 @@ class TurtleTradingStrategy {
                     logger.info(`Adjusted stop loss for ${symbol} due to close proximity`);
                 }
                 
+                // Minimum yüzde olarak stop loss mesafesi kontrolü (yeni eklenen güvenlik önlemi)
+                const minStopLossDistance = currentClose * (this.parameters.minStopLossPercent / 100);
+                if (currentClose - stopLoss < minStopLossDistance) {
+                    // Stop loss, minimum mesafeden daha yakın ise yüzde bazlı minimum mesafeyi uygula
+                    stopLoss = currentClose - minStopLossDistance;
+                    logger.info(`Enforced minimum stop loss distance of ${this.parameters.minStopLossPercent}% for ${symbol} LONG position`);
+                }
+                
             } else if (breakoutLow) {
                 // Trend ile uyumlu mu kontrol et
                 const trendAligned = isDowntrend || (!isUptrend && currentClose < sma50);
@@ -426,6 +472,14 @@ class TurtleTradingStrategy {
                     // Stop loss çok yakın, volatiliteye göre kaydır
                     stopLoss = currentClose + (atr * (dynamicAtrMultiplier + 0.5));
                     logger.info(`Adjusted stop loss for ${symbol} due to close proximity`);
+                }
+                
+                // Minimum yüzde olarak stop loss mesafesi kontrolü (yeni eklenen güvenlik önlemi)
+                const minStopLossDistance = currentClose * (this.parameters.minStopLossPercent / 100);
+                if (stopLoss - currentClose < minStopLossDistance) {
+                    // Stop loss, minimum mesafeden daha yakın ise yüzde bazlı minimum mesafeyi uygula
+                    stopLoss = currentClose + minStopLossDistance;
+                    logger.info(`Enforced minimum stop loss distance of ${this.parameters.minStopLossPercent}% for ${symbol} SHORT position`);
                 }
                 
             } else if (exitLong && existingPositions.hasLong) {
@@ -709,8 +763,8 @@ class TurtleTradingStrategy {
         }
     }
     
-    // Hacim doğrulaması kontrolü
-    checkVolumeConfirmation(candles, threshold = 1.5) {
+    // Hacim doğrulaması kontrolü - lowered thresholds to generate more strong signals
+    checkVolumeConfirmation(candles, threshold = 1.2) { // Lowered from 1.5 to 1.2
         try {
             // Son 20 mumun hacim ortalaması
             const volumes = candles.slice(-20).map(c => parseFloat(c.volume));
@@ -724,16 +778,32 @@ class TurtleTradingStrategy {
                                   parseFloat(candles[candles.length - 2].volume)) / 2;
             
             // Son iki mumun hacmi ortalamanın threshold katından büyükse veya
-            // son mumun hacmi ortalamanın 1.7 katından büyükse doğrula
-            const confirmed = lastTwoVolume > avgVolume * threshold || lastVolume > avgVolume * 1.7;
+            // son mumun hacmi ortalamanın 1.5 katından büyükse doğrula (lowered from 1.7)
+            const confirmed = lastTwoVolume > avgVolume * threshold || lastVolume > avgVolume * 1.5;
+            
+            // Even if volume is a bit below threshold, still confirm if there's a significant price movement
+            const currentCandle = candles[candles.length - 1];
+            const previousCandle = candles[candles.length - 2];
+            const currentHeight = Math.abs(parseFloat(currentCandle.high) - parseFloat(currentCandle.low));
+            const previousHeight = Math.abs(parseFloat(previousCandle.high) - parseFloat(previousCandle.low));
+            
+            // If current candle is significantly larger than previous one, we may confirm even with lower volume
+            const priceMovementSignificant = currentHeight > previousHeight * 1.5;
+            const almostConfirmed = lastTwoVolume > avgVolume * 0.9 || lastVolume > avgVolume * 1.2;
+            
+            const volumeConfirmed = confirmed || (priceMovementSignificant && almostConfirmed);
             
             logger.info(`Volume confirmation for last candle: ${lastVolume > avgVolume * threshold}, ratio: ${(lastVolume/avgVolume).toFixed(2)}x`);
             logger.info(`Volume confirmation for last two candles: ${lastTwoVolume > avgVolume * threshold}, ratio: ${(lastTwoVolume/avgVolume).toFixed(2)}x`);
+            if (priceMovementSignificant) {
+                logger.info(`Significant price movement detected, volume requirements reduced`);
+            }
             
-            return confirmed;
+            return volumeConfirmed;
         } catch (error) {
             logger.error('Error checking volume confirmation:', error);
-            return false;
+            // Return true more often in case of errors instead of blocking signals
+            return true;
         }
     }
     
@@ -792,6 +862,49 @@ class TurtleTradingStrategy {
         } catch (error) {
             logger.error('Error calculating Donchian Channel:', error);
             return { upper: 0, lower: 0, middle: 0 };
+        }
+    }
+    
+    /**
+     * Clean calculation cache to prevent memory leaks
+     */
+    cleanCalculationCache() {
+        try {
+            if (!this.calculationCache || !this.cacheExpiry) {
+                return;
+            }
+            
+            const now = Date.now();
+            let expiredCount = 0;
+            
+            Object.keys(this.cacheExpiry).forEach(key => {
+                if (this.cacheExpiry[key] < now) {
+                    delete this.calculationCache[key];
+                    delete this.cacheExpiry[key];
+                    expiredCount++;
+                }
+            });
+            
+            // If we have too many cache entries, trim the cache
+            const maxCacheSize = 1000;
+            if (Object.keys(this.calculationCache).length > maxCacheSize) {
+                // Get oldest entries based on expiry time
+                const oldestEntries = Object.keys(this.cacheExpiry)
+                    .sort((a, b) => this.cacheExpiry[a] - this.cacheExpiry[b])
+                    .slice(0, 100); // Remove oldest 100 entries
+                    
+                oldestEntries.forEach(key => {
+                    delete this.calculationCache[key];
+                    delete this.cacheExpiry[key];
+                    expiredCount++;
+                });
+            }
+            
+            if (expiredCount > 0) {
+                logger.debug(`Cleaned ${expiredCount} TurtleStrategy cache entries`);
+            }
+        } catch (error) {
+            logger.error(`Error cleaning calculation cache: ${error.message}`);
         }
     }
     

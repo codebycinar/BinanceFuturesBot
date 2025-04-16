@@ -79,9 +79,28 @@ class MultiTimeframeService {
             const timeframes = customTimeframes || 
                               (strategy ? this.getOptimalTimeframes(strategy) : 
                               this.defaultTimeframes);
+            
+            // Create a cache key for this data request
+            const cacheKey = `${symbol}_${timeframes.join('_')}`;
+            
+            // Initialize data cache if needed
+            if (!this.mtfDataCache) {
+                this.mtfDataCache = {};
+                this.mtfDataExpiration = {};
+            }
+            
+            // Check if we have valid cached data (5 second cache for multi-timeframe data)
+            const now = Date.now();
+            const cacheExpiry = 5 * 1000; // 5 seconds
+            
+            if (this.mtfDataCache[cacheKey] && this.mtfDataExpiration[cacheKey] > now) {
+                logger.debug(`Using cached multi-timeframe data for ${symbol} (${timeframes.join(', ')})`);
+                return this.mtfDataCache[cacheKey];
+            }
+            
             const result = {};
 
-            // Fetch candles for all timeframes concurrently
+            // Fetch candles for all timeframes concurrently (using the BinanceService's internal cache)
             const requests = timeframes.map(timeframe =>
                 this.binanceService.getCandles(symbol, timeframe, 100)
                     .then(candles => {
@@ -110,13 +129,52 @@ class MultiTimeframeService {
                 indicators[timeframe] = this.calculateAllIndicators(candles);
             }
 
-            return {
+            const mtfData = {
                 candles: result,
                 indicators: indicators
             };
+            
+            // Store in cache
+            this.mtfDataCache[cacheKey] = mtfData;
+            this.mtfDataExpiration[cacheKey] = now + cacheExpiry;
+            
+            // Create cleanup interval if it doesn't exist
+            if (!this.cacheCleanupInterval) {
+                this.cacheCleanupInterval = setInterval(() => {
+                    this.cleanCache();
+                }, 60 * 1000); // Clean every minute
+            }
+
+            return mtfData;
         } catch (error) {
             logger.error(`Error in MultiTimeframeService for ${symbol}: ${error.message}`);
             throw error;
+        }
+    }
+    
+    /**
+     * Clean expired cache entries
+     */
+    cleanCache() {
+        try {
+            if (!this.mtfDataCache || !this.mtfDataExpiration) return;
+            
+            const now = Date.now();
+            let expiredCount = 0;
+            
+            Object.keys(this.mtfDataExpiration).forEach(key => {
+                if (this.mtfDataExpiration[key] < now) {
+                    delete this.mtfDataCache[key];
+                    delete this.mtfDataExpiration[key];
+                    expiredCount++;
+                }
+            });
+            
+            if (expiredCount > 0) {
+                logger.debug(`Cleaned ${expiredCount} expired multi-timeframe data cache entries`);
+            }
+        } catch (error) {
+            logger.error(`Error cleaning multi-timeframe data cache: ${error.message}`);
         }
     }
 

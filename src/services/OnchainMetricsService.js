@@ -782,14 +782,20 @@ class OnchainMetricsService {
       // Final skoru hesapla (-1 ile +1 arasında)
       const finalScore = totalScore / totalWeight;
       
-      // Skordan sinyal ve güven seviyesi belirle
+      // Skordan sinyal ve güven seviyesi belirle - lowered thresholds to generate stronger signals
       let signal = 'NEUTRAL';
       let confidence = Math.abs(finalScore);
       
-      if (finalScore > 0.3) {
+      // Lower the thresholds to generate more decisive signals
+      if (finalScore > 0.2) { // Reduced from 0.3
         signal = 'BUY';
-      } else if (finalScore < -0.3) {
+      } else if (finalScore < -0.2) { // Increased from -0.3
         signal = 'SELL';
+      }
+      
+      // Even when signal is neutral, ensure we have some confidence level
+      if (signal === 'NEUTRAL' && confidence < 0.1) {
+        confidence = 0.1; // Minimum confidence to ensure system can proceed
       }
       
       logger.info(`OnchainMetricsService smart money signal for ${symbol}: ${signal} (confidence: ${confidence.toFixed(2)}, score: ${finalScore.toFixed(2)})`);

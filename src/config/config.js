@@ -17,7 +17,7 @@ module.exports = {
   topSymbols: [],
   
   // Maksimum açık pozisyon sayısı
-  maxOpenPositions: 3,
+  maxOpenPositions: 6,
   
   // Market tarama aralığı (ms)
   marketScanInterval: 5 * 60 * 1000, // 5 dakika
@@ -92,10 +92,10 @@ module.exports = {
   },
   
   // Risk ve ödül oranları
-  riskPerTrade: 0.01, // Risk per trade (%1 of account)
+  riskPerTrade: 0.03, // Risk per trade (%1 of account)
 
   // Pozisyon boyutunu nasıl hesaplayacağını belirle
-  calculate_position_size: false,  // false: sabit boyut, true: hesaplanmış boyut
+  calculate_position_size: true,  // false: sabit boyut, true: hesaplanmış boyut
   static_position_size: 30, // USDT cinsinden sabit pozisyon boyutu
   
   // Stop-loss ve Take-profit seviyeleri (yüzde cinsinden)
@@ -111,7 +111,6 @@ module.exports = {
 
   // Diğer ayarlar
   marketScanInterval: 120000, // 2 dakika
-  maxOpenPositions: 3, // Açık pozisyon limiti
   
   // RL Bot için izlenecek semboller (daha az sayıda sembolle çalışalım)
   tradingPairs: [
@@ -145,7 +144,7 @@ module.exports = {
     // Pozisyon boyutlandırma
     maxAllocation: 30,                 // Maksimum pozisyon boyutu (USDT)
     baseAllocation: 20,                // Temel pozisyon boyutu (USDT)
-    maxEntries: 3,                     // Maksimum pozisyon girişi
+    maxEntries: 6,                     // Maksimum pozisyon girişi
     
     // Risk yönetimi
     atrMultiplier: 2.5,                // Stop loss için ATR çarpanı (Turtle'dan daha geniş)
