@@ -116,7 +116,8 @@ class EnhancedPositionManager {
                 lowestPrice: positionType === 'SHORT' ? currentPrice : Infinity,
                 trailingStopActive: false,
                 trailingStopLevel: null,
-                breakEvenActive: false
+                breakEvenActive: false,
+                minHoldTime: Date.now() + (30 * 60 * 1000) // Minimum 30 minute hold time - prevents quick stops
             });
         }
         
@@ -147,17 +148,40 @@ class EnhancedPositionManager {
             - Lowest Price: ${state.lowestPrice}
             - Trailing Stop Active: ${state.trailingStopActive}
             - Break Even Active: ${state.breakEvenActive}
+            - Minimum Hold Until: ${new Date(state.minHoldTime).toLocaleString()}
         `);
         
         // Check if position needs to be closed
         let shouldClose = false;
         let closeReason = '';
         
-        // 1. Check for stop loss hit
-        if (positionType === 'LONG' && currentPrice <= stopLoss) {
+        // Only apply stop management rules after the minimum hold time
+        const now = Date.now();
+        const pastMinHoldTime = now > state.minHoldTime;
+        
+        // If we're in the minimum holding period and not in significant profit, don't apply stops
+        if (!pastMinHoldTime) {
+            // Only check stops if we're in significant loss (more than 3%)
+            if (pnlPercent < -3) {
+                logger.info(`Position ${symbol} is in significant loss (${pnlPercent.toFixed(2)}%) before minimum hold time`);
+                // Continue with stop check
+            } else {
+                logger.info(`Position ${symbol} is within minimum hold time, skipping stop checks`);
+                // Skip further checks and don't close the position yet
+                return;
+            }
+        }
+        
+        // 1. Check for stop loss hit (with a small buffer to prevent exact hits)
+        const stopBuffer = 0.05; // 0.05% buffer to prevent exact hits
+        const adjustedStopLoss = positionType === 'LONG' 
+            ? stopLoss * (1 - stopBuffer/100) 
+            : stopLoss * (1 + stopBuffer/100);
+            
+        if (positionType === 'LONG' && currentPrice <= adjustedStopLoss) {
             shouldClose = true;
             closeReason = 'Stop loss hit';
-        } else if (positionType === 'SHORT' && currentPrice >= stopLoss) {
+        } else if (positionType === 'SHORT' && currentPrice >= adjustedStopLoss) {
             shouldClose = true;
             closeReason = 'Stop loss hit';
         }
@@ -173,27 +197,36 @@ class EnhancedPositionManager {
         
         // 3. Check trailing stop
         if (state.trailingStopActive) {
-            if (positionType === 'LONG' && currentPrice <= state.trailingStopLevel) {
+            // Add a small buffer to trailing stop as well
+            const adjustedTrailingStop = positionType === 'LONG'
+                ? state.trailingStopLevel * (1 - stopBuffer/100)
+                : state.trailingStopLevel * (1 + stopBuffer/100);
+                
+            if (positionType === 'LONG' && currentPrice <= adjustedTrailingStop) {
                 shouldClose = true;
                 closeReason = 'Trailing stop hit';
-            } else if (positionType === 'SHORT' && currentPrice >= state.trailingStopLevel) {
+            } else if (positionType === 'SHORT' && currentPrice >= adjustedTrailingStop) {
                 shouldClose = true;
                 closeReason = 'Trailing stop hit';
             }
         }
         
-        // 4. Check for max drawdown (safety measure)
-        const maxDrawdownReached = this.checkMaxDrawdown(state, currentPrice, entryPrice, positionType);
-        if (maxDrawdownReached) {
-            shouldClose = true;
-            closeReason = 'Maximum drawdown reached';
-        }
-        
-        // 5. Check for technical exit signals
-        const technicalExit = await this.checkTechnicalExitSignals(mtfData, position);
-        if (technicalExit.shouldExit) {
-            shouldClose = true;
-            closeReason = `Technical exit signal: ${technicalExit.reason}`;
+        // 4. Check for max drawdown (safety measure) - only after minimum hold time
+        if (pastMinHoldTime) {
+            const maxDrawdownReached = this.checkMaxDrawdown(state, currentPrice, entryPrice, positionType);
+            if (maxDrawdownReached) {
+                shouldClose = true;
+                closeReason = 'Maximum drawdown reached';
+            }
+            
+            // 5. Check for technical exit signals - only after minimum hold time and in profit
+            if (pnlPercent > 0.5) {
+                const technicalExit = await this.checkTechnicalExitSignals(mtfData, position);
+                if (technicalExit.shouldExit) {
+                    shouldClose = true;
+                    closeReason = `Technical exit signal: ${technicalExit.reason}`;
+                }
+            }
         }
         
         // If position should be closed, close it

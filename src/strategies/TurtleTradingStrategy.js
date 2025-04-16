@@ -820,21 +820,23 @@ class TurtleTradingStrategy {
         }
     }
     
-    // Volatiliteye göre dinamik ATR çarpanı hesapla
+    // Volatiliteye göre dinamik ATR çarpanı hesapla - improved to prevent close stops
     getDynamicAtrMultiplier(volatilityLevel) {
+        const baseMultiplier = this.parameters.atrMultiplier;
+        
         // Piyasanın volatilitesine göre ATR çarpanını ayarla
         switch (volatilityLevel) {
             case 'HIGH':
                 // Yüksek volatilitede daha geniş stop loss
-                return this.parameters.atrMultiplier + 1.0;
+                return baseMultiplier + 1.5; // Increased from +1.0 to +1.5
             case 'MEDIUM':
                 // Orta volatilitede normal stop loss
-                return this.parameters.atrMultiplier + 0.5;
+                return baseMultiplier + 1.0; // Increased from +0.5 to +1.0
             case 'LOW':
-                // Düşük volatilitede daha dar stop loss
-                return this.parameters.atrMultiplier;
+                // Düşük volatilitede artık daha geniş stop loss (ATR değeri zaten küçük olduğu için)
+                return baseMultiplier + 0.8; // Added +0.8 instead of using base value
             default:
-                return this.parameters.atrMultiplier;
+                return baseMultiplier + 0.5; // Default also increased to prevent close stops
         }
     }
     

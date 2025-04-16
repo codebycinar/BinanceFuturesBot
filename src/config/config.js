@@ -74,7 +74,7 @@ module.exports = {
     exitChannel: 10,      // 10 periyotluk kanal (çıkış sinyali için)
     atrPeriod: 14,        // ATR periyodu
     riskPercentage: 1,    // Risk yüzdesi %1 (optimum değer)
-    atrMultiplier: 2,     // Stop loss için ATR çarpanı
+    atrMultiplier: 2.5,   // Stop loss için ATR çarpanı (2'den 2.5'e yükseltildi)
     confirmationPeriod: 5, // Daha güçlü doğrulama için 5 mum
     profitMultiplier: 3,  // Risk:Ödül oranı 1:3
     timeframe: '1d',      // Günlük zaman dilimi (daha uzun trend için)
@@ -82,15 +82,16 @@ module.exports = {
     volumeConfirmation: true, // Hacim onayı kontrolü
     useBreakEven: true,    // Break-even kullanımını aç/kapa
     breakEvenActivationPercent: 0.8, // %0.8 kar seviyesinde aktifleştir
-    adaptiveBreakout: true // Adaptif kırılma seviyesi (piyasa koşullarına göre ayarlama)
+    adaptiveBreakout: true, // Adaptif kırılma seviyesi (piyasa koşullarına göre ayarlama)
+    minStopLossPercent: 2.0 // Minimum stop loss mesafesi (1.5%'den 2.0%'ye yükseltildi)
   },
   
   // Risk ve ödül oranları
   riskPerTrade: 0.03, // Risk per trade (%1 of account)
 
   // Pozisyon boyutunu nasıl hesaplayacağını belirle
-  calculate_position_size: true,  // false: sabit boyut, true: hesaplanmış boyut
-  static_position_size: 30, // USDT cinsinden sabit pozisyon boyutu
+  calculate_position_size: true,  // true: hesaplanmış boyut, false: sabit boyut
+  static_position_size: 90, // USDT cinsinden sabit pozisyon boyutu (30 USDT'nin 3 katına çıkarıldı)
   
   // Stop-loss ve Take-profit seviyeleri (yüzde cinsinden)
   stopLossPercent: 1, // %1 stop-loss
