@@ -86,10 +86,10 @@ module.exports = {
   },
   
   // Risk ve ödül oranları
-  riskPerTrade: 0.01, // Risk per trade (%1 of account)
+  riskPerTrade: 0.03, // Risk per trade (%1 of account)
 
   // Pozisyon boyutunu nasıl hesaplayacağını belirle
-  calculate_position_size: false,  // false: sabit boyut, true: hesaplanmış boyut
+  calculate_position_size: true,  // false: sabit boyut, true: hesaplanmış boyut
   static_position_size: 30, // USDT cinsinden sabit pozisyon boyutu
   
   // Stop-loss ve Take-profit seviyeleri (yüzde cinsinden)
