@@ -17,7 +17,7 @@ module.exports = {
   topSymbols: [],
   
   // Maksimum açık pozisyon sayısı
-  maxOpenPositions: 6,
+  maxOpenPositions: 12,
   
   // Market tarama aralığı (ms)
   marketScanInterval: 5 * 60 * 1000, // 5 dakika
